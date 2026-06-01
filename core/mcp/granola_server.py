@@ -561,6 +561,21 @@ async def handle_call_tool(
 
     arguments = arguments or {}
 
+    # Validate the tool name first, so an unknown tool always returns an explicit
+    # error, even when no API key is configured.
+    valid_tools = {
+        "granola_check_available",
+        "granola_get_recent_meetings",
+        "granola_get_meeting_details",
+        "granola_search_meetings",
+        "granola_get_today_meetings",
+        "granola_get_extent",
+    }
+    if name not in valid_tools:
+        return [types.TextContent(type="text", text=json.dumps({
+            "error": f"Unknown tool: {name}"
+        }, indent=2))]
+
     # Every tool requires a configured API key. If absent, return the friendly
     # not-connected message rather than erroring.
     if not get_api_key():
