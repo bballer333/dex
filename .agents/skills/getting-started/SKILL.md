@@ -1,6 +1,7 @@
 ---
 name: getting-started
 description: Interactive post-onboarding tour with adaptive pathways based on available data
+model_hint: fast
 ---
 
 ## Purpose
@@ -217,7 +218,7 @@ Or everything looks current and you're ready to go?
 I just checked what you have available...
 
 **Calendar:** ✅ Connected
-**Granola:** ✅ Connected
+**Granola:** ✅ Installed
 
 Hold on - let me analyze what's there...
 ```
@@ -541,10 +542,10 @@ I can see your calendar for this week:
 
 I can create person pages for your frequent contacts if you'd like.
 
-**But I notice Granola isn't connected** - that's how I process meeting transcripts into action items and insights.
+**But I notice you don't have Granola** - that's how I process meeting transcripts into action items and insights.
 
 Want help with:
-1. Connecting Granola — run `/granola-setup` to add your Granola API key (needs a Granola Business plan) for automatic meeting intelligence
+1. Installing Granola (automatic meeting intelligence)
 2. Connecting another meeting tool
 3. Or tell me what other tools you use - I'll build integrations
 
@@ -558,7 +559,7 @@ What sounds useful?
 ```
 👋 **Welcome back, [Name]!**
 
-I can see Granola is connected. Let me check what's available...
+I can see you have Granola installed. Let me check what's available...
 
 [Analyze Granola data extent - 6 months by default]
 
@@ -801,7 +802,7 @@ Company restrictions, API limitations, weird auth flows -
 lots can go wrong in the real world.
 
 **But here's what's cool:** Even when it doesn't work, you learn:
-• How to use Claude to debug APIs
+• How to use Codex to debug APIs
 • How to build integrations yourself
 • How MCP servers work
 • How to read API documentation
@@ -841,11 +842,57 @@ Only show if:
 
 ## Integration Discovery (Contextual)
 
-If the vault is < 7 days old and few or no integrations are connected, you can
-nudge the user once: mention that `/integrate-mcp` connects tools (calendar,
-email, Slack, task managers, and more) whenever they're ready. Keep it light —
-one suggestion, no pressure — and skip it entirely if they already set up
-integrations during onboarding.
+**Trigger:** Run this check if the vault is < 7 days old AND few or no integrations are connected.
+
+### When to Check
+
+After completing the main pathway flow (A, B, or C) but before showing the completion message:
+
+1. Read `System/integrations/config.yaml` (if it exists)
+2. Count how many integrations have `enabled: true` (exclude `slack` since it's a default)
+3. If connected integrations <= 1 AND vault age < 7 days, run the concierge
+
+### How to Run
+
+Execute the integration concierge:
+```bash
+node .Codex/hooks/integration-concierge.cjs
+```
+
+Parse the JSON output for `high_value` and `moderate_value` recommendations.
+
+### Presenting Recommendations
+
+**Only surface high_value items** (keep it light — this isn't onboarding, it's a nudge).
+
+For each high_value integration found:
+
+```
+By the way, I noticed you mention **[shortName]** in a few places
+([mentions] references across files like [first example file]).
+
+Connecting it would give you: [value proposition]
+
+Setup takes [setupTime]. Want to connect it now?
+```
+
+**If multiple high_value items:**
+
+```
+I also spotted signals for **[shortName2]** and **[shortName3]** in your notes.
+Want to connect any of these? Or run `/integrate-mcp` anytime later.
+```
+
+**Rules:**
+- Maximum 2 integration suggestions (don't overwhelm)
+- Only mention high_value items (score >= 5) — skip moderate and available
+- If user says yes, run the setup skill inline then return to the getting-started completion
+- If user says no/skip/later, move on without pressure
+- Don't show this section if the user already went through integration setup during onboarding Step 8
+
+### Detecting Prior Setup
+
+Check `.onboarding-complete` marker file for an `integrations_offered` flag. If present, skip this section — they already saw integration recommendations during onboarding.
 
 ---
 
@@ -869,6 +916,20 @@ After any pathway completes:
 **Come back anytime:**
 • `/getting-started` - Run this tour again
 • Just ask in natural language - I'll figure out what you need
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Upgrade to Smart Search?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Right now I find your notes with keywords. I can upgrade to
+semantic search — finds content by meaning, not just words.
+
+  "customer churn" → finds notes saying "retention risk",
+  "users leaving", "cancellation patterns"
+
+5 minutes to set up. Runs locally. Recommended.
+
+  [1] Set it up now  →  I'll run /enable-semantic-search
+  [2] Skip for now   →  run /enable-semantic-search anytime
 
 What would you like to work on first?"
 ```
