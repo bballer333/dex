@@ -47,7 +47,12 @@ def main() -> int:
         pass
 
     merge_base = run(["git", "merge-base", "HEAD", f"origin/{base_ref}"])
-    changed = run(["git", "diff", "--name-only", f"{merge_base}...HEAD"]).splitlines()
+    # --diff-filter=ACMR drops deleted (D) files: a deleted module is absent from
+    # coverage.json and would otherwise score 0% and fail the gate. Removing code
+    # must never fail a coverage gate.
+    changed = run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{merge_base}...HEAD"]
+    ).splitlines()
     touched = [
         f
         for f in changed
@@ -55,6 +60,8 @@ def main() -> int:
         and f.endswith(".py")
         and not f.startswith("core/tests/")
         and not f.startswith("core/mcp/tests/")
+        # Guard against any rename/edge-case path that no longer exists on disk.
+        and Path(f).is_file()
     ]
 
     if not touched:

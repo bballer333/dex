@@ -4,7 +4,9 @@ set -euo pipefail
 BASE_REF="${GITHUB_BASE_REF:-main}"
 git fetch origin "$BASE_REF" --depth=1 >/dev/null 2>&1 || true
 MERGE_BASE="$(git merge-base HEAD "origin/$BASE_REF")"
-CHANGED_FILES="$(git diff --name-only "$MERGE_BASE...HEAD")"
+# --diff-filter=ACMR drops deleted (D) files: removing dead code should not
+# require adding a test.
+CHANGED_FILES="$(git diff --name-only --diff-filter=ACMR "$MERGE_BASE...HEAD")"
 
 if [ -z "$CHANGED_FILES" ]; then
   echo "No changed files detected."
