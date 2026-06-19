@@ -26,7 +26,7 @@ ONBOARDING_MARKER="$CLAUDE_DIR/System/.onboarding-complete"
 
 echo "=== Dex Session Context ==="
 echo ""
-echo "📅 Today: $(date '+%A, %B %d, %Y')"
+echo "📅 Today: $(TZ=America/New_York date '+%A, %B %d, %Y')"
 echo ""
 
 # Demo Mode Check
@@ -91,7 +91,7 @@ if [[ -f "$ONBOARDING_MARKER" ]]; then
     # Check for pending learnings (if not checked today)
     if [[ -x "$CLAUDE_DIR/.scripts/learning-review-prompt.sh" ]]; then
         LAST_LEARNING_CHECK="$CLAUDE_DIR/System/.last-learning-check"
-        TODAY=$(date +%Y-%m-%d)
+        TODAY=$(TZ=America/New_York date +%Y-%m-%d)
         
         if [[ ! -f "$LAST_LEARNING_CHECK" ]] || [[ "$(cat "$LAST_LEARNING_CHECK")" != "$TODAY" ]]; then
             bash "$CLAUDE_DIR/.scripts/learning-review-prompt.sh" 2>/dev/null &
