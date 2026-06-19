@@ -107,7 +107,7 @@
 ## Tracking Metadata
 
 - **Last dex-level-up prompt:** (not yet prompted)
-- **First daily plan:** (not yet run)
+- **First daily plan:** 2026-06-19
 - **Setup date:** (set during onboarding)
 
 ---
