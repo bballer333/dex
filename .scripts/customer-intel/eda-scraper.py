@@ -2,14 +2,22 @@
 """
 Dex EDA Data Scraper — UCC-1 Machine Tool Filing Intelligence
 
-Logs into online.edadata.com, searches for UCC filings, and syncs
-key dates back to Salesforce Asset records.
+Logs into online.edadata.com (Fusable OIDC), searches for UCC filings,
+and syncs key dates back to Salesforce Asset records.
 
 Usage:
     python3 eda-scraper.py --discover          # Map site structure after login
     python3 eda-scraper.py --search "Acme"     # Search by company name
     python3 eda-scraper.py --sync              # Sync new filings to Salesforce
-    python3 eda-scraper.py --export            # Export all accessible filings
+    python3 eda-scraper.py --no-cache          # Force fresh login
+
+Login flow (Fusable OIDC/PKCE — server-side two-step):
+  1. GET online.edadata.com  →  302 to appident.fusable.com/Account/Login?ReturnUrl=...
+  2. POST username           →  200, password form appears
+  3. POST username+password  →  302 back through OIDC callback to online.edadata.com
+  4. Session cookies saved for 8 hours
+
+No Playwright needed. Only requires: pip install requests beautifulsoup4
 
 Credentials: stored in .env at vault root (never committed to git)
     EDA_USERNAME=your@email.com
@@ -21,16 +29,17 @@ import os
 import sys
 import argparse
 import time
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 VAULT_PATH   = os.environ.get("VAULT_PATH", str(Path(__file__).parent.parent.parent))
 BASE_URL     = "https://online.edadata.com"
+FUSABLE_BASE = "https://appident.fusable.com"
 SESSION_FILE = Path.home() / ".claude" / "eda_session.json"
 
-# Load credentials from .env
+
 def load_env():
     env_path = Path(VAULT_PATH) / ".env"
     if env_path.exists():
@@ -49,7 +58,6 @@ EDA_PASSWORD = os.environ.get("EDA_PASSWORD", "")
 # ── HTTP Session ───────────────────────────────────────────────────────────────
 
 def make_session():
-    """Create a requests session with browser-like headers."""
     try:
         import requests
     except ImportError:
@@ -59,10 +67,15 @@ def make_session():
     s = requests.Session()
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xhtml+xml,*/*;q=0.9",
+                      "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                  "image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
     })
     return s
 
@@ -78,9 +91,8 @@ def load_session(session):
         return False
     try:
         data = json.loads(SESSION_FILE.read_text())
-        # Expire sessions after 8 hours
         saved = datetime.fromisoformat(data["saved_at"])
-        if (datetime.now() - saved).total_seconds() > 28800:
+        if (datetime.now() - saved).total_seconds() > 28800:  # 8 hours
             return False
         for name, value in data["cookies"].items():
             session.cookies.set(name, value)
@@ -89,23 +101,24 @@ def load_session(session):
         return False
 
 
-# ── Login ─────────────────────────────────────────────────────────────────────
+# ── Login (Fusable OIDC two-step) ──────────────────────────────────────────────
 #
-# EDA Data uses a two-step login at /Account/Login:
-#   Step 1 — POST Username, click Continue
-#   Step 2 — Password field reveals, POST Password
+# The flow confirmed from network inspection:
 #
-# We try both strategies:
-#   A) Single POST with both fields (works if password is already in DOM)
-#   B) Two sequential POSTs (handles true two-step server-side flows)
-
-LOGIN_URL      = f"{BASE_URL}/Account/Login"
-USERNAME_FIELD = "Username"
-PASSWORD_FIELD = "Password"
-
+#   Step 0  GET  online.edadata.com/
+#              → 302 to appident.fusable.com/Account/Login?ReturnUrl=<oidc_params>
+#              (EDA Data generates PKCE code_challenge here; we follow automatically)
+#
+#   Step 1  POST appident.fusable.com/Account/Login   (username only)
+#              → 200, renders page with Password field
+#
+#   Step 2  POST appident.fusable.com/Account/Login   (username + password)
+#              → 302 to /connect/authorize/callback?...
+#              → 302 to online.edadata.com/?code=...
+#              → EDA exchanges code for tokens server-side
+#              → session cookies set on online.edadata.com
 
 def _collect_hidden(soup):
-    """Extract all hidden input fields (CSRF tokens, view state, etc.)."""
     hidden = {}
     for inp in soup.find_all("input", type="hidden"):
         if inp.get("name"):
@@ -113,115 +126,122 @@ def _collect_hidden(soup):
     return hidden
 
 
-def _logged_in(html):
-    """Return True if the response looks like an authenticated page."""
-    low = html.lower()
-    return any(k in low for k in ("log out", "logout", "sign out", "signout",
-                                   "dashboard", "welcome", "my account", "search filings"))
-
-
-def _login_failed(html):
-    low = html.lower()
-    return any(k in low for k in ("invalid", "incorrect password", "login failed",
-                                   "wrong password", "not recognized"))
+def _form_action(soup, fallback_url):
+    form = soup.find("form")
+    if form and form.get("action"):
+        action = form["action"]
+        if action.startswith("http"):
+            return action
+        return FUSABLE_BASE + (action if action.startswith("/") else "/" + action)
+    return fallback_url
 
 
 def login(session):
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        print("ERROR: beautifulsoup4 not installed. Run: pip install requests beautifulsoup4")
+        print("ERROR: beautifulsoup4 not installed. Run: pip install beautifulsoup4")
         sys.exit(1)
 
     if not EDA_USERNAME or not EDA_PASSWORD:
         print("ERROR: EDA_USERNAME and EDA_PASSWORD not set.")
         print(f"Add them to: {Path(VAULT_PATH) / '.env'}")
-        print("  EDA_USERNAME=your@email.com")
-        print("  EDA_PASSWORD=yourpassword")
         sys.exit(1)
 
-    # ── GET login page ─────────────────────────────────────────────────────────
-    print("Fetching login page...", file=sys.stderr)
-    resp = session.get(LOGIN_URL, timeout=30)
-    if resp.status_code != 200:
-        print(f"ERROR: Login page returned {resp.status_code}", file=sys.stderr)
+    # ── Step 0: GET EDA Data → follows OIDC redirect to Fusable login page ─────
+    print("Initiating OIDC login (following EDA → Fusable redirect)...", file=sys.stderr)
+    resp0 = session.get(f"{BASE_URL}/", timeout=30, allow_redirects=True)
+
+    if FUSABLE_BASE not in resp0.url:
+        # Already logged in, or unexpected redirect
+        if BASE_URL in resp0.url and _looks_authenticated(resp0.text):
+            print("  Already authenticated.", file=sys.stderr)
+            save_session(dict(session.cookies))
+            return True
+        print(f"  ERROR: Expected Fusable login page, landed at: {resp0.url}", file=sys.stderr)
         return False
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    hidden = _collect_hidden(soup)
-    print(f"  Hidden fields: {list(hidden.keys())}", file=sys.stderr)
+    fusable_login_url = resp0.url  # e.g. appident.fusable.com/Account/Login?ReturnUrl=...
+    print(f"  Redirected to Fusable: {fusable_login_url[:80]}...", file=sys.stderr)
 
-    # ── Strategy A: single POST with both Username + Password ─────────────────
-    print("Strategy A: single POST (username + password together)...", file=sys.stderr)
-    payload_a = {**hidden, USERNAME_FIELD: EDA_USERNAME, PASSWORD_FIELD: EDA_PASSWORD}
-    resp_a = session.post(LOGIN_URL, data=payload_a, timeout=30, allow_redirects=True)
+    soup0 = BeautifulSoup(resp0.text, "html.parser")
+    hidden0 = _collect_hidden(soup0)
 
-    if _logged_in(resp_a.text):
-        print("  ✓ Login successful (single POST).", file=sys.stderr)
-        save_session(dict(session.cookies))
-        return True
-
-    if _login_failed(resp_a.text):
-        print("  ✗ Credentials rejected. Check EDA_USERNAME / EDA_PASSWORD in .env", file=sys.stderr)
-        return False
-
-    # ── Strategy B: two-step POST ──────────────────────────────────────────────
-    # Step B1: POST username only — server may set a cookie or return a token
-    print("Strategy B: two-step POST...", file=sys.stderr)
+    # ── Step 1: POST username only ─────────────────────────────────────────────
     print("  Step 1: submitting username...", file=sys.stderr)
+    payload1 = {**hidden0, "Username": EDA_USERNAME}
+    resp1 = session.post(
+        fusable_login_url,
+        data=payload1,
+        headers={"Referer": fusable_login_url, "Sec-Fetch-Site": "same-origin"},
+        timeout=30,
+        allow_redirects=True,
+    )
 
-    # Re-fetch to get a fresh page/token (session may have changed from Strategy A)
-    resp = session.get(LOGIN_URL, timeout=30)
-    soup = BeautifulSoup(resp.text, "html.parser")
-    hidden = _collect_hidden(soup)
-
-    payload_b1 = {**hidden, USERNAME_FIELD: EDA_USERNAME}
-    resp_b1 = session.post(LOGIN_URL, data=payload_b1, timeout=30, allow_redirects=True)
-
-    if resp_b1.status_code not in (200, 302):
-        print(f"  Step 1 returned {resp_b1.status_code}", file=sys.stderr)
+    if resp1.status_code not in (200, 302):
+        print(f"  Step 1 returned unexpected status: {resp1.status_code}", file=sys.stderr)
         return False
 
-    # Step B2: Extract any new tokens from the response, then POST password
+    soup1 = BeautifulSoup(resp1.text, "html.parser")
+    hidden1 = _collect_hidden(soup1)
+
+    # Check password field appeared
+    if not soup1.find("input", {"name": "Password"}):
+        if _looks_authenticated(resp1.text) and BASE_URL in resp1.url:
+            print("  ✓ Single-step login succeeded.", file=sys.stderr)
+            save_session(dict(session.cookies))
+            return True
+        print("  ERROR: Password field not found after username step.", file=sys.stderr)
+        print(f"  Current URL: {resp1.url}", file=sys.stderr)
+        return False
+
+    step2_url = _form_action(soup1, fusable_login_url)
+
+    # ── Step 2: POST username + password ──────────────────────────────────────
     print("  Step 2: submitting password...", file=sys.stderr)
-    soup2 = BeautifulSoup(resp_b1.text, "html.parser")
-    hidden2 = _collect_hidden(soup2)
+    payload2 = {**hidden1, "Username": EDA_USERNAME, "Password": EDA_PASSWORD}
+    resp2 = session.post(
+        step2_url,
+        data=payload2,
+        headers={"Referer": f"{FUSABLE_BASE}/Account/Login", "Sec-Fetch-Site": "same-origin"},
+        timeout=30,
+        allow_redirects=True,  # follows OIDC callback chain back to EDA
+    )
 
-    # Determine the correct POST URL for step 2
-    form2 = soup2.find("form")
-    step2_url = LOGIN_URL
-    if form2 and form2.get("action"):
-        action = form2["action"]
-        step2_url = (action if action.startswith("http")
-                     else BASE_URL + (action if action.startswith("/") else "/" + action))
+    # After following all redirects we should land back on online.edadata.com
+    final_url = resp2.url
+    print(f"  Final URL: {final_url}", file=sys.stderr)
 
-    payload_b2 = {**hidden2, USERNAME_FIELD: EDA_USERNAME, PASSWORD_FIELD: EDA_PASSWORD}
-    resp_b2 = session.post(step2_url, data=payload_b2, timeout=30, allow_redirects=True)
+    if BASE_URL in final_url:
+        eda_cookies = {n: v for n, v in session.cookies.items()}
+        if eda_cookies:
+            save_session(eda_cookies)
+            print(f"  ✓ Login successful. {len(eda_cookies)} session cookies saved.", file=sys.stderr)
+            return True
+        # May have landed but without cookies (SPA — verify via content check)
+        if _looks_authenticated(resp2.text):
+            save_session({})
+            print("  ✓ Login successful (no explicit cookies — may use storage).", file=sys.stderr)
+            return True
 
-    if _logged_in(resp_b2.text):
-        print("  ✓ Login successful (two-step POST).", file=sys.stderr)
-        save_session(dict(session.cookies))
-        return True
-
-    if _login_failed(resp_b2.text):
+    if "invalid" in resp2.text.lower() or "incorrect" in resp2.text.lower():
         print("  ✗ Credentials rejected. Check EDA_USERNAME / EDA_PASSWORD in .env", file=sys.stderr)
         return False
 
-    # ── Both strategies ambiguous ──────────────────────────────────────────────
-    # Likely a JS-rendered site — save session and try to proceed
-    print("  Login response ambiguous (may be JS-rendered). Saving session and proceeding.", file=sys.stderr)
-    print("  If --discover returns empty results, run with --playwright flag (see README).", file=sys.stderr)
-    save_session(dict(session.cookies))
-    return True
+    print(f"  ERROR: Login did not complete. Final URL: {final_url}", file=sys.stderr)
+    print("  Check credentials in .env and try again.", file=sys.stderr)
+    return False
+
+
+def _looks_authenticated(html):
+    low = html.lower()
+    return any(k in low for k in ("log out", "logout", "sign out", "signout",
+                                   "dashboard", "welcome", "my account", "search filings"))
 
 
 # ── Discovery ─────────────────────────────────────────────────────────────────
 
 def discover(session):
-    """
-    Map the site structure after login. Finds search pages, reports,
-    export options, and API endpoints. Run this first after getting access.
-    """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
@@ -239,8 +259,14 @@ def discover(session):
     found_pages = []
     for path in pages_to_check:
         try:
-            r = session.get(f"{BASE_URL}{path}", timeout=15)
+            r = session.get(f"{BASE_URL}{path}", timeout=15, allow_redirects=False)
+            if r.status_code == 302:
+                loc = r.headers.get("Location", "")
+                print(f"  → {path:<20} [302] → {loc[:60]}")
+                continue
             if r.status_code == 200 and len(r.text) > 500:
+                # Follow manually to get final page
+                r = session.get(f"{BASE_URL}{path}", timeout=15, allow_redirects=True)
                 soup = BeautifulSoup(r.text, "html.parser")
                 title = soup.find("title")
                 title_text = title.get_text(strip=True) if title else "No title"
@@ -249,44 +275,39 @@ def discover(session):
                 inputs = len(soup.find_all("input"))
                 print(f"  ✓ {path:<20} [{r.status_code}] '{title_text}' "
                       f"({links} links, {forms} forms, {inputs} inputs)")
-                found_pages.append({
-                    "path": path,
-                    "title": title_text,
-                    "links": links,
-                    "forms": forms,
-                })
+                found_pages.append({"path": path, "title": title_text})
 
-                # Look for search forms
                 for form in soup.find_all("form"):
                     action = form.get("action", "")
                     fields = [i.get("name") for i in form.find_all("input") if i.get("name")]
                     if fields:
                         print(f"    Form → action='{action}' fields={fields}")
 
-                # Look for data tables
-                tables = soup.find_all("table")
-                for t in tables[:2]:
+                for t in soup.find_all("table")[:2]:
                     headers = [th.get_text(strip=True) for th in t.find_all("th")]
                     if headers:
                         print(f"    Table headers: {headers}")
 
-            elif r.status_code != 404:
+            elif r.status_code not in (200, 404):
                 print(f"  ? {path:<20} [{r.status_code}]")
         except Exception as e:
             print(f"  ✗ {path:<20} Error: {e}")
         time.sleep(0.5)
 
-    # Also scan all links on the homepage for navigation structure
+    # Scan homepage nav links
     try:
-        r = session.get(f"{BASE_URL}/", timeout=15)
-        if r.status_code == 200:
+        r = session.get(f"{BASE_URL}/", timeout=15, allow_redirects=True)
+        if r.status_code == 200 and BASE_URL in r.url:
             soup = BeautifulSoup(r.text, "html.parser")
-            print("\n  Navigation links found on homepage:")
+            print("\n  Navigation links on homepage:")
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 text = a.get_text(strip=True)
-                if href.startswith("/") and text and len(text) < 50:
-                    print(f"    {text:<30} → {href}")
+                if href.startswith("/") and text and len(text) < 60:
+                    print(f"    {text:<35} → {href}")
+        else:
+            print(f"\n  Homepage redirected to: {r.url}")
+            print("  Session may not be authenticated — try --no-cache to re-login.")
     except Exception:
         pass
 
@@ -298,18 +319,12 @@ def discover(session):
 def search_company(session, company_name):
     """
     Search EDA Data for a company's UCC filings.
-
-    TODO: Update SEARCH_URL and field names once site structure is known.
+    TODO: Update SEARCH_URL and field names after running --discover.
     """
     print(f"\nSearching for: {company_name}", file=sys.stderr)
 
-    # PLACEHOLDER — will be updated after discovery
     SEARCH_URL = f"{BASE_URL}/search"
-    payload = {
-        "company": company_name,   # update field name after discovery
-        "state": "",
-        "type": "equipment",
-    }
+    payload = {"company": company_name, "state": "", "type": "equipment"}
 
     r = session.get(SEARCH_URL, params=payload, timeout=30)
     if r.status_code != 200:
@@ -321,17 +336,9 @@ def search_company(session, company_name):
 
 def parse_results(html):
     """
-    Parse UCC filing results from a search results page.
-
-    TODO: Update selectors once we know the actual HTML structure.
-    Key fields to extract:
-      - debtor_name (company name)
-      - filing_date
-      - lapse_date (= filing_date + 5 years, or continuation date)
-      - filing_number (UCCID)
-      - collateral_description (machine type/model/serial)
-      - secured_party (financing company)
-      - status (active/lapsed/terminated)
+    Parse UCC filing results. Generic table parser — update selectors after discovery.
+    Key fields: debtor_name, filing_date, lapse_date, filing_number,
+                collateral_description, secured_party, status
     """
     try:
         from bs4 import BeautifulSoup
@@ -341,7 +348,6 @@ def parse_results(html):
     soup = BeautifulSoup(html, "html.parser")
     results = []
 
-    # Generic table parser — works for most EDA-style result pages
     for table in soup.find_all("table"):
         headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
         if not headers:
@@ -349,8 +355,7 @@ def parse_results(html):
         for row in table.find_all("tr")[1:]:
             cells = [td.get_text(strip=True) for td in row.find_all("td")]
             if cells and len(cells) >= len(headers):
-                record = dict(zip(headers, cells))
-                results.append(record)
+                results.append(dict(zip(headers, cells)))
 
     return results
 
@@ -367,7 +372,6 @@ def main():
 
     session = make_session()
 
-    # Try saved session first, then fresh login
     if not args.no_cache and load_session(session):
         print("Using saved session.", file=sys.stderr)
     else:
