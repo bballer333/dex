@@ -10,14 +10,14 @@ Usage:
     python3 eda-scraper.py --search "Acme"     # Search by company name
     python3 eda-scraper.py --sync              # Sync new filings to Salesforce
     python3 eda-scraper.py --no-cache          # Force fresh login
+    python3 eda-scraper.py --headed            # Show browser window (debug login)
 
-Login flow (Fusable OIDC/PKCE — server-side two-step):
-  1. GET online.edadata.com  →  302 to appident.fusable.com/Account/Login?ReturnUrl=...
-  2. POST username           →  200, password form appears
-  3. POST username+password  →  302 back through OIDC callback to online.edadata.com
-  4. Session cookies saved for 8 hours
+Login uses Playwright (headless Chromium) — Fusable enforces browser integrity
+checks (Sec-Fetch-User, consent flow) that block plain HTTP clients.
 
-No Playwright needed. Only requires: pip install requests beautifulsoup4
+One-time setup:
+    pip install playwright
+    python -m playwright install chromium
 
 Credentials: stored in .env at vault root (never committed to git)
     EDA_USERNAME=your@email.com
@@ -36,7 +36,7 @@ from pathlib import Path
 
 VAULT_PATH   = os.environ.get("VAULT_PATH", str(Path(__file__).parent.parent.parent))
 BASE_URL     = "https://online.edadata.com"
-FUSABLE_BASE = "https://appident.fusable.com"
+FUSABLE_HOST = "appident.fusable.com"
 SESSION_FILE = Path.home() / ".claude" / "eda_session.json"
 
 
@@ -101,197 +101,150 @@ def load_session(session):
         return False
 
 
-# ── Login (Fusable OIDC two-step) ──────────────────────────────────────────────
+# ── Login (Playwright / Fusable OIDC) ─────────────────────────────────────────
 #
-# The flow confirmed from network inspection:
+# Fusable enforces browser integrity checks (Sec-Fetch-User, consent validation)
+# that return access_denied for plain HTTP clients. Playwright uses real Chromium
+# which satisfies all checks.
 #
-#   Step 0  GET  online.edadata.com/
-#              → 302 to appident.fusable.com/Account/Login?ReturnUrl=<oidc_params>
-#              (EDA Data generates PKCE code_challenge here; we follow automatically)
-#
-#   Step 1  POST appident.fusable.com/Account/Login   (username only)
-#              → 200, renders page with Password field
-#
-#   Step 2  POST appident.fusable.com/Account/Login   (username + password)
-#              → 302 to /connect/authorize/callback?...
-#              → 302 to online.edadata.com/?code=...
-#              → EDA exchanges code for tokens server-side
-#              → session cookies set on online.edadata.com
+# Flow:
+#   1. Navigate to online.edadata.com → OIDC redirect to appident.fusable.com
+#   2. Fill username → click Continue → password field appears
+#   3. Fill password → submit → OIDC callback → session cookies on online.edadata.com
+#   4. Extract cookies → inject into requests Session for all subsequent calls
 
-def _collect_hidden(soup):
-    hidden = {}
-    for inp in soup.find_all("input", type="hidden"):
-        if inp.get("name"):
-            hidden[inp["name"]] = inp.get("value", "")
-    return hidden
-
-
-def _form_action(soup, fallback_url):
-    form = soup.find("form")
-    if form and form.get("action"):
-        action = form["action"]
-        if action.startswith("http"):
-            return action
-        return FUSABLE_BASE + (action if action.startswith("/") else "/" + action)
-    return fallback_url
-
-
-def login(session, debug=False):
+def login(session, headed=False, debug=False):
     try:
-        from bs4 import BeautifulSoup
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
     except ImportError:
-        print("ERROR: beautifulsoup4 not installed. Run: pip install beautifulsoup4")
+        print("", file=sys.stderr)
+        print("ERROR: playwright not installed. Run:", file=sys.stderr)
+        print("  pip install playwright", file=sys.stderr)
+        print("  python -m playwright install chromium", file=sys.stderr)
         sys.exit(1)
 
     if not EDA_USERNAME or not EDA_PASSWORD:
-        print("ERROR: EDA_USERNAME and EDA_PASSWORD not set.")
-        print(f"Add them to: {Path(VAULT_PATH) / '.env'}")
+        print("ERROR: EDA_USERNAME and EDA_PASSWORD not set.", file=sys.stderr)
+        print(f"Add them to: {Path(VAULT_PATH) / '.env'}", file=sys.stderr)
         sys.exit(1)
 
-    # ── Step 0: GET EDA Data → follows OIDC redirect to Fusable login page ─────
-    print("Initiating OIDC login (following EDA → Fusable redirect)...", file=sys.stderr)
-    resp0 = session.get(f"{BASE_URL}/", timeout=30, allow_redirects=True)
+    print("Launching browser for Fusable OIDC login...", file=sys.stderr)
 
-    if FUSABLE_BASE not in resp0.url:
-        # Already logged in, or unexpected redirect
-        if BASE_URL in resp0.url and _looks_authenticated(resp0.text):
-            print("  Already authenticated.", file=sys.stderr)
-            save_session(dict(session.cookies))
-            return True
-        print(f"  ERROR: Expected Fusable login page, landed at: {resp0.url}", file=sys.stderr)
-        return False
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=not headed)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+        )
+        page = context.new_page()
 
-    fusable_login_url = resp0.url  # e.g. appident.fusable.com/Account/Login?ReturnUrl=...
-    print(f"  Redirected to Fusable: {fusable_login_url[:80]}...", file=sys.stderr)
+        try:
+            # ── Navigate to EDA → OIDC redirect to Fusable ────────────────────
+            print("  Navigating to EDA Data...", file=sys.stderr)
+            page.goto(f"{BASE_URL}/", timeout=30000)
+            page.wait_for_url(f"**/{FUSABLE_HOST}/**", timeout=20000)
 
-    soup0 = BeautifulSoup(resp0.text, "html.parser")
-    hidden0 = _collect_hidden(soup0)
-
-    # ── Step 1: POST username only ─────────────────────────────────────────────
-    # IdentityServer (Fusable) requires a named button value to know which action
-    # to execute — "button=login" is the standard IdentityServer pattern.
-    print("  Step 1: submitting username...", file=sys.stderr)
-    payload1 = {**hidden0, "Username": EDA_USERNAME, "button": "login"}
-    resp1 = session.post(
-        fusable_login_url,
-        data=payload1,
-        headers={"Referer": fusable_login_url, "Sec-Fetch-Site": "same-origin"},
-        timeout=30,
-        allow_redirects=True,
-    )
-
-    if resp1.status_code not in (200, 302):
-        print(f"  Step 1 returned unexpected status: {resp1.status_code}", file=sys.stderr)
-        return False
-
-    soup1 = BeautifulSoup(resp1.text, "html.parser")
-    hidden1 = _collect_hidden(soup1)
-
-    if debug:
-        print(f"  [debug] Step 1 URL: {resp1.url}", file=sys.stderr)
-        print(f"  [debug] Step 1 hidden fields: {list(hidden1.keys())}", file=sys.stderr)
-        pw_inp = soup1.find("input", {"name": "Password"})
-        print(f"  [debug] Password field present: {pw_inp is not None}", file=sys.stderr)
-        # Show first 500 chars of form HTML to help diagnose
-        form = soup1.find("form")
-        if form:
-            print(f"  [debug] Form action: {form.get('action', '(none)')}", file=sys.stderr)
-            visible = [i.get("name") for i in form.find_all("input") if i.get("type") != "hidden" and i.get("name")]
-            print(f"  [debug] Visible inputs: {visible}", file=sys.stderr)
-
-    # Check password field appeared
-    if not soup1.find("input", {"name": "Password"}):
-        if _looks_authenticated(resp1.text) and BASE_URL in resp1.url:
-            print("  ✓ Single-step login succeeded.", file=sys.stderr)
-            save_session(dict(session.cookies))
-            return True
-        print("  ERROR: Password field not found after username step.", file=sys.stderr)
-        print(f"  Current URL: {resp1.url}", file=sys.stderr)
-        return False
-
-    step2_url = _form_action(soup1, fusable_login_url)
-
-    # ── Step 2: POST username + password, then trace the redirect chain ────────
-    print("  Step 2: submitting password...", file=sys.stderr)
-
-    if debug:
-        eda_cookies_before = [(k, v[:30] + "...") for k, v in session.cookies.items()
-                              if "edadata" in session.cookies.get_dict().get(k, "") or True]
-        print(f"  [debug] Session cookies before password POST ({len(list(session.cookies))} total):",
-              file=sys.stderr)
-        for c in session.cookies:
-            print(f"    {c.domain:<35} {c.name}", file=sys.stderr)
-
-    payload2 = {**hidden1, "Username": EDA_USERNAME, "Password": EDA_PASSWORD}
-    resp2 = session.post(
-        step2_url,
-        data=payload2,
-        headers={"Referer": f"{FUSABLE_BASE}/Account/Login", "Sec-Fetch-Site": "same-origin"},
-        timeout=30,
-        allow_redirects=False,  # follow manually so we can trace each hop
-    )
-
-    # ── Manually follow the redirect chain ────────────────────────────────────
-    from urllib.parse import urljoin
-    current_url = step2_url
-    max_hops = 12
-
-    for hop in range(max_hops):
-        status = resp2.status_code
-        location = resp2.headers.get("Location", "")
-
-        if debug:
-            new_cookies = list(resp2.cookies.keys())
-            print(f"  [debug] hop {hop}: {status} {current_url[:90]}", file=sys.stderr)
-            if new_cookies:
-                print(f"    new cookies: {new_cookies}", file=sys.stderr)
-            if location:
-                print(f"    → {location[:90]}", file=sys.stderr)
-
-        if status not in (301, 302, 303, 307, 308):
-            break  # Final response
-
-        if not location:
-            break
-
-        # Make absolute URL
-        if not location.startswith("http"):
-            location = urljoin(current_url, location)
-
-        current_url = location
-
-        # Stop and check if we've arrived at EDA Data
-        if BASE_URL in current_url:
             if debug:
-                print(f"  [debug] Hitting EDA callback: {current_url[:90]}", file=sys.stderr)
-                print(f"  [debug] EDA cookies in session:", file=sys.stderr)
-                for c in session.cookies:
-                    if "edadata" in c.domain:
-                        print(f"    {c.name}", file=sys.stderr)
+                print(f"  [debug] Login page: {page.url[:80]}", file=sys.stderr)
 
-        resp2 = session.get(current_url, timeout=30, allow_redirects=False)
+            # ── Fill username and click Continue ───────────────────────────────
+            print("  Filling username...", file=sys.stderr)
+            page.wait_for_selector('input[name="Username"]', timeout=10000)
+            page.fill('input[name="Username"]', EDA_USERNAME)
 
-    final_url = current_url
-    print(f"  Final URL: {final_url[:100]}", file=sys.stderr)
+            # Click the Continue / submit button
+            _click_submit(page)
 
-    if BASE_URL in final_url:
-        eda_cookies = {n: v for n, v in session.cookies.items()}
-        if eda_cookies:
-            save_session(eda_cookies)
-            print(f"  ✓ Login successful. {len(eda_cookies)} session cookies saved.", file=sys.stderr)
-            return True
-        if _looks_authenticated(resp2.text):
-            save_session({})
-            print("  ✓ Login successful (no explicit cookies — may use local storage).", file=sys.stderr)
-            return True
+            # ── Wait for password field ────────────────────────────────────────
+            print("  Waiting for password field...", file=sys.stderr)
+            try:
+                page.wait_for_selector('input[name="Password"]', timeout=8000)
+            except PWTimeout:
+                if BASE_URL in page.url:
+                    return _extract_cookies(context, session, browser)
+                print("  ERROR: Password field did not appear.", file=sys.stderr)
+                _debug_screenshot(page)
+                browser.close()
+                return False
 
-    if "invalid" in resp2.text.lower() or "incorrect" in resp2.text.lower():
-        print("  ✗ Credentials rejected. Check EDA_USERNAME / EDA_PASSWORD in .env", file=sys.stderr)
+            if debug:
+                print(f"  [debug] Password page URL: {page.url[:80]}", file=sys.stderr)
+
+            # ── Fill password and submit ───────────────────────────────────────
+            print("  Filling password...", file=sys.stderr)
+            page.fill('input[name="Password"]', EDA_PASSWORD)
+            _click_submit(page)
+
+            # ── Wait for redirect back to EDA Data ────────────────────────────
+            print("  Waiting for EDA Data session...", file=sys.stderr)
+            try:
+                page.wait_for_url(f"**/online.edadata.com/**", timeout=20000)
+            except PWTimeout:
+                if debug:
+                    print(f"  [debug] Current URL after wait: {page.url[:80]}", file=sys.stderr)
+                    _debug_screenshot(page)
+                print("  ERROR: Did not land back on EDA Data. Check credentials.", file=sys.stderr)
+                browser.close()
+                return False
+
+            print(f"  Landed at: {page.url[:80]}", file=sys.stderr)
+            return _extract_cookies(context, session, browser)
+
+        except PWTimeout as e:
+            print(f"  ERROR: Timeout — {e}", file=sys.stderr)
+            print(f"  URL at timeout: {page.url[:80]}", file=sys.stderr)
+            _debug_screenshot(page)
+            browser.close()
+            return False
+        except Exception as e:
+            print(f"  ERROR: {e}", file=sys.stderr)
+            _debug_screenshot(page)
+            browser.close()
+            return False
+
+
+def _click_submit(page):
+    for selector in [
+        'button[type="submit"]',
+        'input[type="submit"]',
+        'button:has-text("Continue")',
+        'button:has-text("Login")',
+        'button:has-text("Sign in")',
+    ]:
+        btn = page.query_selector(selector)
+        if btn:
+            btn.click()
+            return
+    page.keyboard.press("Enter")
+
+
+def _extract_cookies(context, session, browser):
+    cookies = context.cookies()
+    browser.close()
+
+    cookie_dict = {}
+    for c in cookies:
+        domain = c.get("domain", "")
+        if "edadata.com" in domain or "fusable.com" in domain:
+            session.cookies.set(c["name"], c["value"])
+            cookie_dict[c["name"]] = c["value"]
+
+    if not cookie_dict:
+        print("  WARNING: No session cookies captured.", file=sys.stderr)
         return False
 
-    print(f"  ERROR: Login did not complete. Landed at: {final_url[:100]}", file=sys.stderr)
-    print("  Run with --debug to trace the redirect chain.", file=sys.stderr)
-    return False
+    save_session(cookie_dict)
+    print(f"  ✓ Login successful. {len(cookie_dict)} cookies saved.", file=sys.stderr)
+    return True
+
+
+def _debug_screenshot(page):
+    try:
+        path = Path.home() / ".claude" / "eda_login_debug.png"
+        page.screenshot(path=str(path))
+        print(f"  Screenshot saved: {path}", file=sys.stderr)
+    except Exception:
+        pass
 
 
 def _looks_authenticated(html):
@@ -429,7 +382,8 @@ def main():
     parser.add_argument("--search",    type=str, default="",  help="Search by company name")
     parser.add_argument("--sync",      action="store_true", help="Sync new filings to Salesforce")
     parser.add_argument("--no-cache",  action="store_true", help="Force fresh login, ignore saved session")
-    parser.add_argument("--debug",     action="store_true", help="Print debug info during login")
+    parser.add_argument("--headed",    action="store_true", help="Show browser window during login")
+    parser.add_argument("--debug",     action="store_true", help="Verbose login output + screenshot on error")
     args = parser.parse_args()
 
     session = make_session()
@@ -437,7 +391,7 @@ def main():
     if not args.no_cache and load_session(session):
         print("Using saved session.", file=sys.stderr)
     else:
-        if not login(session, debug=args.debug):
+        if not login(session, headed=args.headed, debug=args.debug):
             sys.exit(1)
 
     if args.discover:
