@@ -283,10 +283,8 @@ def discover(session):
 
     print("\n=== EDA Data Site Discovery ===\n")
 
-    pages_to_check = [
-        "/", "/Query", "/Watch", "/Analyze", "/Report",
-        "/PRM", "/Labs", "/DynamicHomepage",
-    ]
+    # Probe only the pages we actually need — keep request count low
+    pages_to_check = ["/Query", "/Report", "/Analyze"]
 
     found_pages = []
     for path in pages_to_check:
@@ -324,7 +322,7 @@ def discover(session):
                 print(f"  ? {path:<20} [{r.status_code}]")
         except Exception as e:
             print(f"  X  {path:<20} Error: {e}")
-        time.sleep(0.5)
+        time.sleep(1)
 
     # Scan homepage nav links
     try:
@@ -351,50 +349,71 @@ def discover(session):
 def search_company(session, company_name):
     """
     Search EDA Data for a company's UCC/equipment filings via /Query.
+    Makes exactly 2 requests: one to read the form, one to submit.
     """
     print(f"\nSearching for: {company_name}", file=sys.stderr)
 
-    # First GET /Query to see the search form fields
+    # Request 1: GET /Query to read the form structure
     r = session.get(f"{BASE_URL}/Query", timeout=30)
     if r.status_code != 200:
-        print(f"/Query returned {r.status_code}", file=sys.stderr)
+        print(f"  /Query returned {r.status_code}", file=sys.stderr)
         return []
 
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(r.text, "html.parser")
-        # Show form structure so we can identify the right field names
+
+        # Print form fields so we can identify the right param name
+        print("  /Query form fields:", file=sys.stderr)
         for form in soup.find_all("form"):
-            action = form.get("action", "")
-            fields = [(i.get("name"), i.get("type", "text"), i.get("placeholder", ""))
+            action = form.get("action", "/Query")
+            inputs = [(i.get("name"), i.get("type", "text"), i.get("placeholder", ""))
                       for i in form.find_all("input") if i.get("name")]
             selects = [s.get("name") for s in form.find_all("select") if s.get("name")]
-            if fields or selects:
-                print(f"  Form action='{action}'", file=sys.stderr)
-                print(f"  Inputs: {fields}", file=sys.stderr)
-                print(f"  Selects: {selects}", file=sys.stderr)
-    except Exception:
-        pass
+            if inputs or selects:
+                print(f"    action='{action}' inputs={inputs} selects={selects}", file=sys.stderr)
 
-    # Try common EDA/UCC search parameter names (update after inspecting form above)
-    for param_name in ["CompanyName", "company", "debtor", "Name", "q"]:
-        params = {param_name: company_name}
-        r2 = session.get(f"{BASE_URL}/Query", params=params, timeout=30)
-        results = parse_results(r2.text)
-        if results:
-            print(f"  Found {len(results)} results using param '{param_name}'", file=sys.stderr)
-            return results
+        # Guess the company name field from placeholder text or name patterns
+        search_input = (
+            soup.find("input", {"placeholder": lambda p: p and "company" in p.lower()}) or
+            soup.find("input", {"name": lambda n: n and any(
+                k in n.lower() for k in ("company", "debtor", "name", "search", "query"))}) or
+            soup.find("input", {"type": "text"})
+        )
 
-    # Also try POST
-    for param_name in ["CompanyName", "company", "debtor", "Name"]:
-        r3 = session.post(f"{BASE_URL}/Query", data={param_name: company_name}, timeout=30)
-        results = parse_results(r3.text)
-        if results:
-            print(f"  Found {len(results)} results via POST param '{param_name}'", file=sys.stderr)
-            return results
+        if not search_input:
+            print("  Could not detect search field. Check form fields above.", file=sys.stderr)
+            return []
 
-    print("  No results — run --discover to inspect /Query form fields.", file=sys.stderr)
-    return []
+        field_name = search_input.get("name", "company")
+        form_el = search_input.find_parent("form")
+        form_action = f"{BASE_URL}/Query"
+        if form_el and form_el.get("action"):
+            action = form_el["action"]
+            form_action = action if action.startswith("http") else f"{BASE_URL}{action}"
+
+        # Hidden fields (CSRF etc.)
+        hidden = {i["name"]: i.get("value", "") for i in soup.find_all("input", type="hidden") if i.get("name")}
+
+        print(f"  Submitting search: field='{field_name}' action='{form_action}'", file=sys.stderr)
+
+        # Request 2: submit the search (try GET first, then POST)
+        method = (form_el.get("method", "get").lower() if form_el else "get")
+        payload = {**hidden, field_name: company_name}
+
+        time.sleep(1)  # polite pause between requests
+        if method == "post":
+            r2 = session.post(form_action, data=payload, timeout=30)
+        else:
+            r2 = session.get(form_action, params={field_name: company_name}, timeout=30)
+
+    except Exception as e:
+        print(f"  Search error: {e}", file=sys.stderr)
+        return []
+
+    results = parse_results(r2.text)
+    print(f"  Found {len(results)} results.", file=sys.stderr)
+    return results
 
 
 def parse_results(html):
