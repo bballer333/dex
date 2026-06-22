@@ -41,7 +41,7 @@ _Link emails (from Retool email MCP) and OneDrive documents here._
 
 ## Activity Log
 
-- **2026-06-17** — Email: Re: Scotchman Industries Inc - Sales Quote MQ001646
+- **2026-06-17** — Email: Re: Scotchman Industries Inc - Sales Quote MQ001646 [dex] <!-- sf:00TNu00000teQSMMA2 -->
 - **2026-06-10** — Email: Scotchman Industries Inc - Sales Quote MQ001646 (Connor Stutzman)
 - **2026-06-05** — Email: Re: RFQ: Aluminum Upcut Saw (Erik Sims)
 - **2026-05-29** — Email: Re: RFQ: Aluminum Upcut Saw (Erik Sims)

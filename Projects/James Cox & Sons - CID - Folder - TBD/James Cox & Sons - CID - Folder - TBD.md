@@ -1,5 +1,5 @@
 ---
-sf_opportunity_id: pending-lookup
+sf_opportunity_id: 006Nu00000JOjM2IAL
 sf_account_id: 0015Y00002kC1XhQAK
 sf_last_synced: 2026-06-17T19:45:00
 ---

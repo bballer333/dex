@@ -330,6 +330,19 @@ TOOLS = [
         },
     },
     {
+        "name": "sf_get_completed_tasks",
+        "description": "Get completed tasks logged in Salesforce within a date range. Returns subject, description/comments, date, contact, and related record. Use to review activity history or analyze note-writing patterns.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "Start date (YYYY-MM-DD, default 365 days ago)"},
+                "date_to": {"type": "string", "description": "End date (YYYY-MM-DD, default today)"},
+                "limit": {"type": "integer", "description": "Max results (default 50)"},
+                "has_description": {"type": "boolean", "description": "If true, only return tasks that have a non-empty Description/comment field (default false)"},
+            },
+        },
+    },
+    {
         "name": "sf_update_opportunity_notes",
         "description": "Update the Next Steps and/or Description fields on a Salesforce opportunity. Use after decisions are made or next actions are defined.",
         "inputSchema": {
@@ -685,6 +698,48 @@ def tool_sf_get_open_tasks(args):
     return {"tasks": tasks, "count": len(tasks)}
 
 
+def tool_sf_get_completed_tasks(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    import datetime
+    today = datetime.date.today().isoformat()
+    default_from = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
+    date_from = args.get("date_from", default_from)
+    date_to = args.get("date_to", today)
+    limit = args.get("limit", 50)
+    has_description = args.get("has_description", False)
+    owner_filter = f"AND OwnerId = '{OWNER_ID}'" if OWNER_ID else ""
+    desc_filter = "AND Description != null" if has_description else ""
+    soql = (
+        f"SELECT Subject, Status, ActivityDate, Description, Type, Who.Name, What.Name, Owner.Name "
+        f"FROM Task "
+        f"WHERE Status = 'Completed' "
+        f"AND ActivityDate >= {date_from} "
+        f"AND ActivityDate <= {date_to} "
+        f"{owner_filter} {desc_filter} "
+        f"ORDER BY ActivityDate DESC "
+        f"LIMIT {limit}"
+    )
+    try:
+        result = sf_query(tokens, soql)
+    except Exception as e:
+        return {"error": str(e), "soql": soql}
+    tasks = []
+    for r in result.get("records", []):
+        tasks.append({
+            "subject": r.get("Subject"),
+            "type": r.get("Type"),
+            "status": r.get("Status"),
+            "date": r.get("ActivityDate"),
+            "description": r.get("Description"),
+            "contact": r.get("Who", {}).get("Name") if r.get("Who") else None,
+            "related_to": r.get("What", {}).get("Name") if r.get("What") else None,
+            "owner": r.get("Owner", {}).get("Name") if r.get("Owner") else None,
+        })
+    return {"tasks": tasks, "count": len(tasks)}
+
+
 def tool_sf_update_opportunity_notes(args):
     tokens = get_valid_tokens()
     if not tokens:
@@ -713,6 +768,7 @@ TOOL_FNS = {
     "sf_get_opportunity": tool_sf_get_opportunity,
     "sf_create_task": tool_sf_create_task,
     "sf_get_open_tasks": tool_sf_get_open_tasks,
+    "sf_get_completed_tasks": tool_sf_get_completed_tasks,
     "sf_update_opportunity_notes": tool_sf_update_opportunity_notes,
 }
 
