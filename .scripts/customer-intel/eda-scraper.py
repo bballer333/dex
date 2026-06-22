@@ -358,15 +358,24 @@ def _pw_context_with_cookies(playwright, session, headed=False):
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
     )
-    # Inject session cookies
+    # Inject session cookies. Playwright requires url OR domain+path.
+    # Cookies loaded from file have no domain, so fall back to url.
     pw_cookies = []
     for cookie in session.cookies:
-        pw_cookies.append({
-            "name":   cookie.name,
-            "value":  cookie.value,
-            "domain": cookie.domain.lstrip("."),
-            "path":   cookie.path or "/",
-        })
+        domain = (cookie.domain or "").lstrip(".")
+        if domain:
+            pw_cookies.append({
+                "name":   cookie.name,
+                "value":  cookie.value,
+                "domain": domain,
+                "path":   cookie.path or "/",
+            })
+        else:
+            pw_cookies.append({
+                "name":  cookie.name,
+                "value": cookie.value,
+                "url":   BASE_URL,
+            })
     if pw_cookies:
         context.add_cookies(pw_cookies)
     return browser, context
