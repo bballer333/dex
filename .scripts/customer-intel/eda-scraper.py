@@ -283,10 +283,8 @@ def discover(session):
 
     print("\n=== EDA Data Site Discovery ===\n")
 
-    pages_to_check = [
-        "/", "/Query", "/Watch", "/Analyze", "/Report",
-        "/PRM", "/Labs", "/DynamicHomepage",
-    ]
+    # Probe only the pages we actually need — keep request count low
+    pages_to_check = ["/Query", "/Report", "/Analyze"]
 
     found_pages = []
     for path in pages_to_check:
@@ -324,7 +322,7 @@ def discover(session):
                 print(f"  ? {path:<20} [{r.status_code}]")
         except Exception as e:
             print(f"  X  {path:<20} Error: {e}")
-        time.sleep(0.5)
+        time.sleep(1)
 
     # Scan homepage nav links
     try:
@@ -351,50 +349,51 @@ def discover(session):
 def search_company(session, company_name):
     """
     Search EDA Data for a company's UCC/equipment filings via /Query.
+    Makes exactly 2 requests: one to read the form, one to submit.
     """
     print(f"\nSearching for: {company_name}", file=sys.stderr)
 
-    # First GET /Query to see the search form fields
+    # Request 1: GET /Query to read the form structure
     r = session.get(f"{BASE_URL}/Query", timeout=30)
     if r.status_code != 200:
-        print(f"/Query returned {r.status_code}", file=sys.stderr)
+        print(f"  /Query returned {r.status_code}", file=sys.stderr)
         return []
 
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(r.text, "html.parser")
-        # Show form structure so we can identify the right field names
+
+        # Print form fields so we can identify the right param name
+        print("  /Query form fields:", file=sys.stderr)
         for form in soup.find_all("form"):
-            action = form.get("action", "")
-            fields = [(i.get("name"), i.get("type", "text"), i.get("placeholder", ""))
+            action = form.get("action", "/Query")
+            inputs = [(i.get("name"), i.get("type", "text"), i.get("placeholder", ""))
                       for i in form.find_all("input") if i.get("name")]
             selects = [s.get("name") for s in form.find_all("select") if s.get("name")]
-            if fields or selects:
-                print(f"  Form action='{action}'", file=sys.stderr)
-                print(f"  Inputs: {fields}", file=sys.stderr)
-                print(f"  Selects: {selects}", file=sys.stderr)
-    except Exception:
-        pass
+            if inputs or selects:
+                print(f"    action='{action}' inputs={inputs} selects={selects}", file=sys.stderr)
 
-    # Try common EDA/UCC search parameter names (update after inspecting form above)
-    for param_name in ["CompanyName", "company", "debtor", "Name", "q"]:
-        params = {param_name: company_name}
-        r2 = session.get(f"{BASE_URL}/Query", params=params, timeout=30)
-        results = parse_results(r2.text)
-        if results:
-            print(f"  Found {len(results)} results using param '{param_name}'", file=sys.stderr)
-            return results
+        # Discovery confirmed: company name search field is SearchTextBox, POST to /Query
+        field_name = "SearchTextBox"
+        form_action = f"{BASE_URL}/Query"
 
-    # Also try POST
-    for param_name in ["CompanyName", "company", "debtor", "Name"]:
-        r3 = session.post(f"{BASE_URL}/Query", data={param_name: company_name}, timeout=30)
-        results = parse_results(r3.text)
-        if results:
-            print(f"  Found {len(results)} results via POST param '{param_name}'", file=sys.stderr)
-            return results
+        # Include any hidden fields (CSRF tokens etc.)
+        hidden = {i["name"]: i.get("value", "")
+                  for i in soup.find_all("input", type="hidden") if i.get("name")}
 
-    print("  No results — run --discover to inspect /Query form fields.", file=sys.stderr)
-    return []
+        print(f"  Submitting: POST /Query SearchTextBox='{company_name}'", file=sys.stderr)
+        time.sleep(1)  # polite pause
+
+        # Request 2: POST the search
+        r2 = session.post(form_action, data={**hidden, field_name: company_name}, timeout=30)
+
+    except Exception as e:
+        print(f"  Search error: {e}", file=sys.stderr)
+        return []
+
+    results = parse_results(r2.text)
+    print(f"  Found {len(results)} results.", file=sys.stderr)
+    return results
 
 
 def parse_results(html):
@@ -423,16 +422,78 @@ def parse_results(html):
     return results
 
 
+# ── Saved Query Execution ─────────────────────────────────────────────────────
+
+KNOWN_SAVED_QUERIES = [
+    "All Data - 10 YR CB", "All Data - 10YR", "All Data - 2025 PA",
+    "CB Account - NY", "CB Account Match - CNC Router",
+    "CB Accounts - Benders", "CB Accounts - Coil Straightners",
+    "CB Accounts - Folder", "CB Accounts - High Probability Buy",
+    "CB Accounts - Ironworker", "CB Accounts - Laser",
+    "CB Accounts - Med Probability Buy", "CB Accounts - Plasma",
+    "CB Accounts - Plasma1", "CB Accounts - Press Brakes",
+    "CB Accounts - Punch", "CB Accounts - Roll", "CB Accounts - Saw",
+    "CB Accounts - Shear", "CB Accounts - Stamping Press",
+    "CB Accounts - VMC/UMC", "CB Accounts - Waterjet",
+    "CB Accounts Matched", "CB-PK Accounts - Waterjet",
+    "Comp Waterjet Accounts", "Florida-JZ", "LVD Strippit Punch",
+    "NY - 1 YR - EQUIPMENT BREAKDOWN", "NY - 1YR - Trumpf",
+    "TRUMPF Press Brakes", "Vaski Metal (Rotand) - NA Installations",
+    "WA, OR, CA - Copper",
+]
+
+
+def list_saved_queries(session):
+    print("\nSaved EDA queries:")
+    for q in KNOWN_SAVED_QUERIES:
+        print(f"  {q}")
+    print(f"\nRun one: --run-query \"CB Accounts - Press Brakes\"")
+
+
+def run_saved_query(session, query_name):
+    """
+    Run a named saved query from /Query by submitting its button value.
+    Each saved query appears as a named input on the /Query form.
+    """
+    print(f"\nRunning saved query: {query_name}", file=sys.stderr)
+
+    r = session.get(f"{BASE_URL}/Query", timeout=30)
+    if r.status_code != 200:
+        print(f"  /Query returned {r.status_code}", file=sys.stderr)
+        return []
+
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        hidden = {i["name"]: i.get("value", "")
+                  for i in soup.find_all("input", type="hidden") if i.get("name")}
+    except Exception as e:
+        print(f"  Parse error: {e}", file=sys.stderr)
+        return []
+
+    # The saved query name is a named submit button on the form
+    payload = {**hidden, query_name: query_name}
+    print(f"  Submitting saved query button...", file=sys.stderr)
+    time.sleep(1)
+
+    r2 = session.post(f"{BASE_URL}/Query", data=payload, timeout=60)
+    results = parse_results(r2.text)
+    print(f"  Found {len(results)} results.", file=sys.stderr)
+    return results
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="EDA Data scraper for Dex")
-    parser.add_argument("--discover",  action="store_true", help="Map site structure after login")
-    parser.add_argument("--search",    type=str, default="",  help="Search by company name")
-    parser.add_argument("--sync",      action="store_true", help="Sync new filings to Salesforce")
-    parser.add_argument("--no-cache",  action="store_true", help="Force fresh login, ignore saved session")
-    parser.add_argument("--headed",    action="store_true", help="Show browser window during login")
-    parser.add_argument("--debug",     action="store_true", help="Verbose login output + screenshot on error")
+    parser.add_argument("--discover",   action="store_true", help="Map site structure after login")
+    parser.add_argument("--search",     type=str, default="", help="Search by company name")
+    parser.add_argument("--run-query",  type=str, default="", help="Run a saved EDA query by name")
+    parser.add_argument("--list-queries", action="store_true", help="List all saved queries")
+    parser.add_argument("--sync",       action="store_true", help="Sync new filings to Salesforce")
+    parser.add_argument("--no-cache",   action="store_true", help="Force fresh login, ignore saved session")
+    parser.add_argument("--headed",     action="store_true", help="Show browser window during login")
+    parser.add_argument("--debug",      action="store_true", help="Verbose login output + screenshot on error")
     args = parser.parse_args()
 
     session = make_session()
@@ -447,6 +508,14 @@ def main():
         discover(session)
     elif args.search:
         results = search_company(session, args.search)
+        if results:
+            print(json.dumps(results, indent=2))
+        else:
+            print("No results found.")
+    elif args.list_queries:
+        list_saved_queries(session)
+    elif args.run_query:
+        results = run_saved_query(session, args.run_query)
         if results:
             print(json.dumps(results, indent=2))
         else:
