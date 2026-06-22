@@ -284,9 +284,8 @@ def discover(session):
     print("\n=== EDA Data Site Discovery ===\n")
 
     pages_to_check = [
-        "/", "/home", "/dashboard", "/search", "/report",
-        "/equipment", "/filings", "/ucc", "/data", "/export",
-        "/api", "/accounts", "/assets",
+        "/", "/Query", "/Watch", "/Analyze", "/Report",
+        "/PRM", "/Labs", "/DynamicHomepage",
     ]
 
     found_pages = []
@@ -351,20 +350,51 @@ def discover(session):
 
 def search_company(session, company_name):
     """
-    Search EDA Data for a company's UCC filings.
-    TODO: Update SEARCH_URL and field names after running --discover.
+    Search EDA Data for a company's UCC/equipment filings via /Query.
     """
     print(f"\nSearching for: {company_name}", file=sys.stderr)
 
-    SEARCH_URL = f"{BASE_URL}/search"
-    payload = {"company": company_name, "state": "", "type": "equipment"}
-
-    r = session.get(SEARCH_URL, params=payload, timeout=30)
+    # First GET /Query to see the search form fields
+    r = session.get(f"{BASE_URL}/Query", timeout=30)
     if r.status_code != 200:
-        print(f"Search returned {r.status_code}", file=sys.stderr)
+        print(f"/Query returned {r.status_code}", file=sys.stderr)
         return []
 
-    return parse_results(r.text)
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "html.parser")
+        # Show form structure so we can identify the right field names
+        for form in soup.find_all("form"):
+            action = form.get("action", "")
+            fields = [(i.get("name"), i.get("type", "text"), i.get("placeholder", ""))
+                      for i in form.find_all("input") if i.get("name")]
+            selects = [s.get("name") for s in form.find_all("select") if s.get("name")]
+            if fields or selects:
+                print(f"  Form action='{action}'", file=sys.stderr)
+                print(f"  Inputs: {fields}", file=sys.stderr)
+                print(f"  Selects: {selects}", file=sys.stderr)
+    except Exception:
+        pass
+
+    # Try common EDA/UCC search parameter names (update after inspecting form above)
+    for param_name in ["CompanyName", "company", "debtor", "Name", "q"]:
+        params = {param_name: company_name}
+        r2 = session.get(f"{BASE_URL}/Query", params=params, timeout=30)
+        results = parse_results(r2.text)
+        if results:
+            print(f"  Found {len(results)} results using param '{param_name}'", file=sys.stderr)
+            return results
+
+    # Also try POST
+    for param_name in ["CompanyName", "company", "debtor", "Name"]:
+        r3 = session.post(f"{BASE_URL}/Query", data={param_name: company_name}, timeout=30)
+        results = parse_results(r3.text)
+        if results:
+            print(f"  Found {len(results)} results via POST param '{param_name}'", file=sys.stderr)
+            return results
+
+    print("  No results — run --discover to inspect /Query form fields.", file=sys.stderr)
+    return []
 
 
 def parse_results(html):
