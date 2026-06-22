@@ -741,7 +741,168 @@ def cmd_cache_info():
         print(f"{q:<45} {data.get('count',0):>8}  {ts}")
 
 
-def cmd_profile(company_query, our_brands):
+def _vault_path():
+    """Resolve vault root: VAULT_PATH env, or 2 levels up from this script."""
+    vp = os.environ.get("VAULT_PATH", "")
+    if vp:
+        return Path(vp)
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _company_page_path(company_name):
+    safe = re.sub(r'[<>:"/\\|?*]', '', company_name).strip().replace(" ", "_")
+    return _vault_path() / "People" / "Companies" / f"{safe}.md"
+
+
+def _build_markdown(company_name, buyer, assets_sorted, our_eq, comp_eq, terms,
+                    leases, avg_interval_months, season_str, URGENCY_ICON,
+                    our_brands, today):
+    """Return a markdown string for the company page."""
+    lines = []
+    addr_parts = [buyer.get("buyadr1",""), buyer.get("buycity",""),
+                  buyer.get("buystate",""), buyer.get("buyzip","")]
+    addr = ", ".join(p for p in addr_parts if p)
+    phone = buyer.get("buyphone","")
+    sic = buyer.get("buysicdesc","")
+
+    contacts = []
+    for n in ["buyc1first buyc1last buyc1title", "buyc2first buyc2last buyc2title"]:
+        fn, ln, tt = [buyer.get(k,"").strip() for k in n.split()]
+        if fn or ln:
+            contacts.append(f"{fn} {ln}".strip() + (f" ({tt})" if tt else ""))
+
+    lines.append(f"---")
+    lines.append(f"name: {company_name}")
+    lines.append(f"type: customer")
+    lines.append(f"eda_sync: {today.isoformat()}")
+    lines.append(f"---")
+    lines.append("")
+    lines.append(f"# {company_name}")
+    lines.append("")
+
+    # Basic info
+    lines.append("## Overview")
+    lines.append("")
+    if addr:
+        lines.append(f"- **Address:** {addr}")
+    if phone and phone != "0000000000":
+        lines.append(f"- **Phone:** {phone}")
+    if sic:
+        lines.append(f"- **Industry:** {sic}")
+    for c in contacts:
+        lines.append(f"- **Contact:** {c}")
+    lines.append("")
+
+    # EDA Intelligence section (matches what /customer-intel skill expects)
+    lines.append("## EDA Intelligence")
+    lines.append(f"*Last updated: {today.isoformat()} | Source: EDA/UCC-1 local cache*")
+    lines.append("")
+
+    filing_dates = [a["filing_date"] for a in assets_sorted if a["filing_date"]]
+    crit = [a for a in leases if a["urgency"] in ("CRITICAL", "HIGH")]
+
+    # Fleet summary
+    lines.append("**Fleet Summary**")
+    lines.append("")
+    active_count = len(our_eq) + len(comp_eq)
+    summary_rows = [
+        f"| Total EDA records | {len(assets_sorted)} |",
+        f"| Active equipment | {active_count} |",
+    ]
+    if our_brands:
+        summary_rows += [
+            f"| Our equipment | {len(our_eq)} |",
+            f"| Competitor equipment | {len(comp_eq)} |",
+        ]
+    summary_rows.append(f"| Leases tracked | {len(leases)} |")
+    if crit:
+        summary_rows.append(f"| **Leases expiring <6 months** | **{len(crit)} — PRIORITY** |")
+    if avg_interval_months:
+        summary_rows.append(f"| Avg buy interval | ~{avg_interval_months} months |")
+    if filing_dates:
+        summary_rows.append(f"| First filing | {filing_dates[0]} |")
+        summary_rows.append(f"| Most recent filing | {filing_dates[-1]} |")
+    summary_rows.append(f"| Buying season | {season_str} |")
+
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.extend(summary_rows)
+    lines.append("")
+
+    # Our equipment table
+    if our_eq and our_brands:
+        lines.append("### Our Equipment on Floor")
+        lines.append("")
+        lines.append("| Machine Type | Model | Builder | Filed | S/L |")
+        lines.append("|-------------|-------|---------|-------|-----|")
+        for a in our_eq:
+            sl = "Lease" if a["is_lease"] else "Sale"
+            lines.append(f"| {a['eqtdesc'] or '—'} | {a['eqtmodel'] or '—'} | {a['eqtman'] or '—'} | {a['filing_date'] or '—'} | {sl} |")
+        lines.append("")
+
+    # Competitor equipment table
+    if comp_eq and our_brands:
+        lines.append("### Competitor Equipment on Floor")
+        lines.append("")
+        lines.append("| Machine Type | Model | Competitor | Filed | S/L |")
+        lines.append("|-------------|-------|-----------|-------|-----|")
+        for a in comp_eq:
+            sl = "Lease" if a["is_lease"] else "Sale"
+            lines.append(f"| {a['eqtdesc'] or '—'} | {a['eqtmodel'] or '—'} | {a['eqtman'] or '—'} | {a['filing_date'] or '—'} | {sl} |")
+        lines.append("")
+
+    # All equipment (no our-brands config)
+    if not our_brands:
+        lines.append("### Equipment on Floor")
+        lines.append("")
+        lines.append("| Machine Type | Model | Manufacturer | Filed | S/L |")
+        lines.append("|-------------|-------|-------------|-------|-----|")
+        for a in our_eq + comp_eq:
+            sl = "Lease" if a["is_lease"] else "Sale"
+            lines.append(f"| {a['eqtdesc'] or '—'} | {a['eqtmodel'] or '—'} | {a['eqtman'] or '—'} | {a['filing_date'] or '—'} | {sl} |")
+        lines.append("")
+
+    # Lease expiration tracker
+    if leases:
+        lines.append("### Lease Expiration Tracker")
+        lines.append("")
+        lines.append("| Status | Machine | Manufacturer | Filed | Est. End |")
+        lines.append("|--------|---------|-------------|-------|----------|")
+        for a in sorted(leases, key=lambda x: x["est_end"] or date(2099,1,1)):
+            icon = URGENCY_ICON.get(a["urgency"] or "", "")
+            urg = f"{icon} {a['urgency']}" if a["urgency"] else "—"
+            lines.append(f"| {urg} | {a['eqtdesc'] or '—'} | {a['eqtman'] or '—'} | {a['filing_date'] or '—'} | {a['est_end'] or '—'} |")
+        lines.append("")
+
+    # Strategic notes
+    lines.append("### Strategic Notes")
+    lines.append("")
+    if crit:
+        lines.append(f"- **PRIORITY:** {len(crit)} lease(s) expiring within 6 months — contact now.")
+    if comp_eq and our_brands:
+        comp_brands = sorted({a["eqtman"] for a in comp_eq if a["eqtman"]})
+        old_comp = [a for a in comp_eq if a["filing_date"] and (today - a["filing_date"]).days > 365*7]
+        lines.append(f"- Competitor brands on floor: {', '.join(comp_brands)}")
+        if old_comp:
+            lines.append(f"- {len(old_comp)} competitor machine(s) 7+ years old — displacement opportunity.")
+    if avg_interval_months and filing_dates:
+        next_pred = filing_dates[-1] + timedelta(days=avg_interval_months * 30)
+        if next_pred >= today:
+            lines.append(f"- Next predicted buy window: ~{next_pred} (based on {avg_interval_months}-month avg interval)")
+        else:
+            overdue = (today - next_pred).days // 30
+            lines.append(f"- Pattern suggests purchase was due ~{overdue} months ago — may be actively shopping.")
+    if not crit and not comp_eq:
+        lines.append("- No immediate outreach triggers from EDA data.")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("*Profile auto-generated by `eda-scraper.py --profile --save`. Run again to refresh.*")
+
+    return "\n".join(lines) + "\n"
+
+
+def cmd_profile(company_query, our_brands, save=False):
     """Generate a customer intelligence profile from the local EDA cache."""
     cache = load_cache()
     if not cache:
@@ -847,6 +1008,22 @@ def cmd_profile(company_query, our_brands):
     season_months = month_counts.most_common(3)
     MONTH_NAMES = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
     season_str = ", ".join(MONTH_NAMES[m] for m, _ in season_months) if season_months else "unknown"
+
+    # ── Save to vault ─────────────────────────────────────────────────────────
+    if save:
+        md = _build_markdown(company_name, buyer, assets_sorted, our_eq, comp_eq,
+                             terms, leases, avg_interval_months, season_str,
+                             URGENCY_ICON, our_brands, today)
+        out_path = _company_page_path(company_name)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(md, encoding="utf-8")
+        print(f"Saved: {out_path}")
+        # Run auto-link if available
+        auto_link = _vault_path() / ".scripts" / "auto-link-people.cjs"
+        if auto_link.exists():
+            import subprocess
+            subprocess.run(["node", str(auto_link), str(out_path)],
+                           capture_output=True)
 
     # ── Print profile ─────────────────────────────────────────────────────────
     sep = "-" * 72
@@ -1087,6 +1264,7 @@ def main():
     parser.add_argument("--search",         type=str, default="", help="Search cached data by any field value")
     parser.add_argument("--field",          type=str, default="", help="Restrict --search to a specific field name")
     parser.add_argument("--profile",        type=str, default="", help="Generate customer intelligence profile from local cache")
+    parser.add_argument("--save",           action="store_true", help="Save --profile output to People/Companies/ in the vault")
     parser.add_argument("--sync",           action="store_true", help="Sync EDA cache to Salesforce Assets")
     parser.add_argument("--account",        type=str, default="", help="Limit --sync to one account name (partial match)")
     parser.add_argument("--dry-run",        action="store_true", help="Preview --sync without writing to Salesforce")
@@ -1109,7 +1287,7 @@ def main():
         return
 
     if args.profile:
-        cmd_profile(args.profile, load_our_brands())
+        cmd_profile(args.profile, load_our_brands(), save=args.save)
         return
 
     if args.sync or args.dry_run:
