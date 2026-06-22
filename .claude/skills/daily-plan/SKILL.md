@@ -380,24 +380,26 @@ Scan all `Projects/*.md` files and extract Stage, Amount, Close Date, and deal n
 
 Call `sf_get_project_management` from the Salesforce MCP to pull all active `Project_Management__c` records (closed won orders in delivery).
 
-**Milestone logic** (auto-computed by the tool based on install date):
-- **> 60 days out:** Verify tooling, software, and training are ordered
-- **30–60 days out:** Confirm foundation and site requirements with customer
-- **14–30 days out:** Send pre-installation manual (includes checklist) to customer
-- **< 14 days out:** DELIVERY IMMINENT — confirm pre-install checklist is complete, all items accounted for
+The tool auto-computes `pending_actions` for each record based on actual checkbox fields in Salesforce:
+- **`Intro_Customer_Call__c` = false** → Make intro customer call (early action)
+- **`Intro_Vendor_Email__c` = false** → Send intro vendor email (early action)
+- **`Deposit_Paid__c` = false** → 💰 Deposit not yet received (flag any time)
+- **Within 30 days + `PIM_Sent__c` = false** → Send pre-installation manual to customer
+- **Within 14 days** → 🔴 DELIVERY IMMINENT — confirm pre-install checklist complete
+- **`Ship_in_4_weeks__c` = true** → Machine shipping soon — coordinate with customer
 
-**Surface in the plan only if there are actionable milestones:**
+**Surface in the plan only if there are records with non-empty `pending_actions`:**
 
 > **📦 Active Orders — Milestone Check**
 >
-> | Customer | Machine | Install Date | Days Out | Action Needed |
-> |----------|---------|--------------|----------|---------------|
-> | Hanwha Philly Shipyard | TEC 80' Laser | 2026-07-15 | 23 days | Send pre-installation manual |
-> | Gottstein Corporation | FLO Mach500 | 2026-09-01 | 71 days | Verify tooling/software ordered |
+> | Customer | Machine | Ship Date | Install Date | Days Out | Pending |
+> |----------|---------|-----------|--------------|----------|---------|
+> | Hanwha Philly Shipyard | TEC 80' Laser | 2026-07-01 | 2026-07-22 | 30 days | Send PIM |
+> | Gottstein Corp | FLO Mach500 | — | 2026-09-10 | 80 days | 💰 Deposit not received, intro call |
 
-**Deposit & Invoices column:** Surface any records where `Deposit_and_Invoices__c` is blank or flagged — missing deposit info before delivery is a risk.
+**Show `ships_in_4_weeks = true` records prominently** — these need immediate attention regardless of install date.
 
-**If Salesforce MCP unavailable or PM object returns no records:** Skip this section silently.
+**If Salesforce MCP unavailable or PM object returns no records with pending actions:** Skip this section silently.
 
 ---
 

@@ -344,7 +344,7 @@ TOOLS = [
     },
     {
         "name": "sf_get_project_management",
-        "description": "Get Project Management records (closed won orders in delivery). Returns account, related opportunity, scheduled ship date, install date, and deposit/invoice status. Use in daily planning to surface upcoming deliveries and milestone check-ins.",
+        "description": "Get Project Management records (Project_Management__c — closed won orders in delivery). Returns account, machine type/model, ship date, install date, and checkbox milestone status (Deposit_Paid__c, PIM_Sent__c, Intro_Customer_Call__c, Intro_Vendor_Email__c). Auto-computes pending actions based on days until install. Use in daily planning to surface upcoming deliveries and overdue milestones.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -762,13 +762,19 @@ def tool_sf_get_project_management(args):
     if days_ahead:
         cutoff = (datetime.date.today() + datetime.timedelta(days=days_ahead)).isoformat()
         date_filter = f"AND Install_Date__c <= {cutoff}"
+    rep_filter = f"AND Sales_Rep__c = '{OWNER_ID}'" if OWNER_ID else ""
     soql = f"""
-        SELECT Id, Name, Account__r.Name, Opportunity__r.Name,
-               Scheduled_Ship_Date__c, Install_Date__c, Deposit_and_Invoices__c,
-               CreatedDate
+        SELECT Id, Name,
+               Account_Name__r.Name,
+               Opportunity_Name__r.Name,
+               OWU_Ship_Date__c, Updated_Ship_Date__c, Install_Date__c,
+               Deposit_Paid__c, PIM_Sent__c,
+               Intro_Customer_Call__c, Intro_Vendor_Email__c,
+               Status__c, Machine_Type__c, Model__c,
+               Next_Steps__c, Sale_Close_Date__c, Ship_in_4_weeks__c
         FROM Project_Management__c
         WHERE Install_Date__c != null
-        {date_filter}
+        {rep_filter} {date_filter}
         ORDER BY Install_Date__c ASC NULLS LAST
         LIMIT {limit}
     """
@@ -777,31 +783,48 @@ def tool_sf_get_project_management(args):
     records = []
     for r in result.get("records", []):
         install_raw = r.get("Install_Date__c")
-        ship_raw = r.get("Scheduled_Ship_Date__c")
+        ship_raw = r.get("Updated_Ship_Date__c") or r.get("OWU_Ship_Date__c")
         install_date = datetime.date.fromisoformat(install_raw) if install_raw else None
         days_until_install = (install_date - today).days if install_date else None
+        pim_sent = r.get("PIM_Sent__c", False)
+        deposit_paid = r.get("Deposit_Paid__c", False)
 
-        # Determine which milestone action is most relevant right now
-        milestone = None
+        # Compute all pending milestone actions
+        actions = []
         if days_until_install is not None:
-            if days_until_install <= 14:
-                milestone = "DELIVERY IMMINENT — confirm pre-install checklist complete"
-            elif days_until_install <= 30:
-                milestone = "Send pre-installation manual to customer"
-            elif days_until_install <= 60:
-                milestone = "Confirm foundation/site requirements with customer"
-            else:
-                milestone = "Verify tooling, software, and training ordered"
+            if days_until_install <= 14 and not pim_sent:
+                actions.append("⚠️ DELIVERY IMMINENT — PIM not sent yet!")
+            elif days_until_install <= 14:
+                actions.append("🔴 DELIVERY IMMINENT — confirm pre-install checklist complete")
+            if days_until_install <= 30 and not pim_sent:
+                actions.append("Send pre-installation manual (PIM) to customer")
+            if days_until_install <= 60:
+                actions.append("Confirm foundation/site requirements with customer")
+            if not r.get("Intro_Customer_Call__c"):
+                actions.append("Make intro customer call")
+            if not r.get("Intro_Vendor_Email__c"):
+                actions.append("Send intro vendor email")
+        if not deposit_paid:
+            actions.append("💰 Deposit not yet received")
 
         records.append({
             "name": r.get("Name"),
-            "account": r.get("Account__r", {}).get("Name") if r.get("Account__r") else None,
-            "opportunity": r.get("Opportunity__r", {}).get("Name") if r.get("Opportunity__r") else None,
-            "scheduled_ship_date": ship_raw,
+            "account": r.get("Account_Name__r", {}).get("Name") if r.get("Account_Name__r") else None,
+            "opportunity": r.get("Opportunity_Name__r", {}).get("Name") if r.get("Opportunity_Name__r") else None,
+            "machine_type": r.get("Machine_Type__c"),
+            "model": r.get("Model__c"),
+            "status": r.get("Status__c"),
+            "ship_date": ship_raw,
+            "ships_in_4_weeks": r.get("Ship_in_4_weeks__c", False),
             "install_date": install_raw,
             "days_until_install": days_until_install,
-            "deposit_invoices": r.get("Deposit_and_Invoices__c"),
-            "milestone_action": milestone,
+            "deposit_paid": deposit_paid,
+            "pim_sent": pim_sent,
+            "intro_customer_call": r.get("Intro_Customer_Call__c", False),
+            "intro_vendor_email": r.get("Intro_Vendor_Email__c", False),
+            "sale_close_date": r.get("Sale_Close_Date__c"),
+            "next_steps": r.get("Next_Steps__c"),
+            "pending_actions": actions,
         })
     return {"project_management_records": records, "count": len(records)}
 
