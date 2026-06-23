@@ -22,6 +22,8 @@ plan_completion_rate: 33%
 ## ✅ Accomplished
 
 - ❌ → ✅ **S&W Metal TruBend Cell 5000 closed out** — $942K opportunity marked Closed Lost. Project page updated, pipeline cleaned up. Saves time chasing a dead deal.
+- ✅ **Demo prep complete** — Penn Steel / AGT demo (Tuesday 1–2:30pm Bristol PA) ready to go.
+- ✅ **Patrick Thornton email sent** — reached out to book Pat Mooney aluminum upcut saw call. Following up tomorrow with calls to Erik and Connor re: Patrick and PMI meeting later in week.
 
 ---
 
@@ -56,8 +58,8 @@ plan_completion_rate: 33%
 **Suggested focus:**
 
 1. [ ] **Call Hanwha Philly Shipyard** — carry from today, first thing in the morning before the drive to Bristol
-2. [ ] **Penn Steel / AGT Demo** — 1:00–2:30pm in-person. Prep tonight if not done: review Ali Fahim's automation goals, align with Tom Belizzia and Dean Bower on roles
-3. [ ] **Email Patrick Thornton** — if not sent today, send tonight or first thing tomorrow
+2. [ ] **Penn Steel / AGT Demo** — 1:00–2:30pm in-person (Bristol PA). Prep done ✅
+3. [ ] **Call Erik and Connor** — re: Patrick Thornton / Pat Mooney aluminum upcut saw + PMI meeting scheduling later in week
 
 **After the demo:** capture notes and any follow-ups before they fade — ideally in the car or right when you get back.
 
@@ -70,11 +72,11 @@ plan_completion_rate: 33%
 
 ---
 
-## ❓ Unconfirmed — Please Update
+## ✅ End-of-Day Confirmation
 
-- [ ] **Patrick Thornton email** — did this go out? Is the call booked for Wed or Thu?
-- [ ] **Afternoon batch** — any of these happen: Gambone call, Pocono Metals follow-up, SS Industries quote (154596), Glenn Spalding call?
-- [ ] **Demo prep** — done, or still needed tonight?
+- [x] **Patrick Thornton email** — sent ✅. Following up tomorrow with Erik and Connor re: Pat Mooney meeting + PMI scheduling.
+- [ ] **Afternoon batch** — ❌ None completed: Gambone call, Pocono Metals follow-up, SS Industries quote (154596), Glenn Spalding call → carry to this week.
+- [x] **Demo prep** — done ✅. Ready for Tuesday 1:00–2:30pm at Penn Steel (Bristol PA).
 
 ---
 
