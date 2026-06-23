@@ -57,6 +57,43 @@ async function sfQuery(env: Env, soql: string): Promise<any[]> {
   return data.records ?? [];
 }
 
+async function sfPatch(env: Env, path: string, body: Record<string, unknown>): Promise<void> {
+  const { instanceUrl, accessToken } = await getSalesforceToken(env);
+  const res = await fetch(`${instanceUrl}/services/data/v59.0/${path}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Salesforce update failed: ${err}`);
+  }
+}
+
+async function sfPost(env: Env, path: string, body: Record<string, unknown>): Promise<string> {
+  const { instanceUrl, accessToken } = await getSalesforceToken(env);
+  const res = await fetch(`${instanceUrl}/services/data/v59.0/${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Salesforce create failed: ${err}`);
+  }
+
+  const data = await res.json() as { id: string };
+  return data.id;
+}
+
 function formatContact(r: any): string {
   return [
     `Name: ${r.Name}`,
@@ -177,6 +214,147 @@ function createMcpServer(env: Env): McpServer {
           .join("\n")
       ).join("\n---\n");
       return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.tool(
+    "update_opportunity_stage",
+    "Update the stage, amount, or close date of an opportunity",
+    {
+      opportunity_name: z.string().describe("Opportunity name to search for"),
+      stage: z.string().optional().describe("New stage name (e.g. Prospecting, Quoting, Negotiation, Closed Won, Closed Lost)"),
+      amount: z.number().optional().describe("New amount in dollars"),
+      close_date: z.string().optional().describe("New close date in YYYY-MM-DD format"),
+      probability: z.number().optional().describe("New probability percentage (0-100)"),
+    },
+    async ({ opportunity_name, stage, amount, close_date, probability }) => {
+      const safe = opportunity_name.replace(/'/g, "\\'");
+      const records = await sfQuery(env, `
+        SELECT Id, Name, StageName, Amount, CloseDate
+        FROM Opportunity
+        WHERE Name LIKE '%${safe}%' AND IsClosed = false
+        ORDER BY CreatedDate DESC
+        LIMIT 5
+      `);
+
+      if (!records.length) return { content: [{ type: "text", text: `No open opportunity found matching "${opportunity_name}".` }] };
+
+      if (records.length > 1) {
+        const list = records.map((r: any) => `- ${r.Name} (${r.StageName})`).join("\n");
+        return { content: [{ type: "text", text: `Found multiple matches — be more specific:\n${list}` }] };
+      }
+
+      const opp = records[0];
+      const updates: Record<string, unknown> = {};
+      if (stage) updates.StageName = stage;
+      if (amount !== undefined) updates.Amount = amount;
+      if (close_date) updates.CloseDate = close_date;
+      if (probability !== undefined) updates.Probability = probability;
+
+      await sfPatch(env, `sobjects/Opportunity/${opp.Id}`, updates);
+
+      const changed = Object.entries(updates)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(", ");
+      return { content: [{ type: "text", text: `Updated "${opp.Name}": ${changed}` }] };
+    }
+  );
+
+  server.tool(
+    "log_activity",
+    "Log a call, email, or meeting activity against a Salesforce contact or opportunity",
+    {
+      subject: z.string().describe("Subject of the activity (e.g. 'Call with John Wallo')"),
+      description: z.string().describe("Notes or summary of what was discussed"),
+      type: z.enum(["Call", "Email", "Meeting"]).describe("Type of activity"),
+      contact_name: z.string().optional().describe("Contact name to link the activity to"),
+      opportunity_name: z.string().optional().describe("Opportunity name to link the activity to"),
+      date: z.string().optional().describe("Date of activity in YYYY-MM-DD format, defaults to today"),
+    },
+    async ({ subject, description, type, contact_name, opportunity_name, date }) => {
+      const today = new Date().toISOString().split("T")[0];
+      const body: Record<string, unknown> = {
+        Subject: subject,
+        Description: description,
+        Type: type,
+        ActivityDate: date ?? today,
+        Status: "Completed",
+      };
+
+      if (contact_name) {
+        const safe = contact_name.replace(/'/g, "\\'");
+        const contacts = await sfQuery(env, `SELECT Id FROM Contact WHERE Name LIKE '%${safe}%' LIMIT 1`);
+        if (contacts.length) body.WhoId = contacts[0].Id;
+      }
+
+      if (opportunity_name) {
+        const safe = opportunity_name.replace(/'/g, "\\'");
+        const opps = await sfQuery(env, `SELECT Id FROM Opportunity WHERE Name LIKE '%${safe}%' AND IsClosed = false LIMIT 1`);
+        if (opps.length) body.WhatId = opps[0].Id;
+      }
+
+      const id = await sfPost(env, "sobjects/Task", body);
+      return { content: [{ type: "text", text: `Activity logged (ID: ${id}): "${subject}" on ${body.ActivityDate}` }] };
+    }
+  );
+
+  server.tool(
+    "create_contact",
+    "Create a new contact in Salesforce",
+    {
+      first_name: z.string().describe("First name"),
+      last_name: z.string().describe("Last name"),
+      account_name: z.string().optional().describe("Account/company name to link to"),
+      title: z.string().optional().describe("Job title"),
+      email: z.string().optional().describe("Email address"),
+      phone: z.string().optional().describe("Phone number"),
+    },
+    async ({ first_name, last_name, account_name, title, email, phone }) => {
+      const body: Record<string, unknown> = {
+        FirstName: first_name,
+        LastName: last_name,
+      };
+      if (title) body.Title = title;
+      if (email) body.Email = email;
+      if (phone) body.Phone = phone;
+
+      if (account_name) {
+        const safe = account_name.replace(/'/g, "\\'");
+        const accounts = await sfQuery(env, `SELECT Id FROM Account WHERE Name LIKE '%${safe}%' LIMIT 1`);
+        if (accounts.length) body.AccountId = accounts[0].Id;
+        else return { content: [{ type: "text", text: `Account "${account_name}" not found in Salesforce. Create the account first or check the name.` }] };
+      }
+
+      const id = await sfPost(env, "sobjects/Contact", body);
+      return { content: [{ type: "text", text: `Contact created: ${first_name} ${last_name} (ID: ${id})${account_name ? ` linked to ${account_name}` : ""}` }] };
+    }
+  );
+
+  server.tool(
+    "create_opportunity",
+    "Create a new opportunity in Salesforce",
+    {
+      name: z.string().describe("Opportunity name"),
+      account_name: z.string().describe("Account/company name"),
+      stage: z.string().describe("Stage name (e.g. Prospecting, Quoting, Negotiation)"),
+      close_date: z.string().describe("Expected close date in YYYY-MM-DD format"),
+      amount: z.number().optional().describe("Expected amount in dollars"),
+    },
+    async ({ name, account_name, stage, close_date, amount }) => {
+      const safe = account_name.replace(/'/g, "\\'");
+      const accounts = await sfQuery(env, `SELECT Id FROM Account WHERE Name LIKE '%${safe}%' LIMIT 1`);
+      if (!accounts.length) return { content: [{ type: "text", text: `Account "${account_name}" not found in Salesforce.` }] };
+
+      const body: Record<string, unknown> = {
+        Name: name,
+        AccountId: accounts[0].Id,
+        StageName: stage,
+        CloseDate: close_date,
+      };
+      if (amount !== undefined) body.Amount = amount;
+
+      const id = await sfPost(env, "sobjects/Opportunity", body);
+      return { content: [{ type: "text", text: `Opportunity created: "${name}" for ${account_name} at ${stage} stage (ID: ${id})` }] };
     }
   );
 
