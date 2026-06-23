@@ -2,6 +2,7 @@
 """Salesforce MCP server for Dex — contacts, opportunities, accounts, activities."""
 
 import base64
+import email as email_lib
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import sys
 import threading
 import webbrowser
 from datetime import datetime, date, timedelta
+from email.header import decode_header as email_decode_header
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -600,6 +602,27 @@ TOOLS = [
                 "include_past_window": {"type": "boolean", "description": "Include deals already past the 60-month mark (default true)"},
                 "limit": {"type": "integer", "description": "Max results (default 200)"},
             },
+        },
+    },
+    {
+        "name": "email_read_pending",
+        "description": "Read pending quote-request emails that have been dropped into the vault's Inbox/Emails/pending/ folder (e.g. by a Power Automate flow or by dragging an .eml file there). Returns each file's content, sender, subject, date, and original filename. After processing, call email_archive_pending to move the file out of the queue.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max files to return (default 5, newest first)"},
+            },
+        },
+    },
+    {
+        "name": "email_archive_pending",
+        "description": "Move a processed email file from Inbox/Emails/pending/ to Inbox/Emails/processed/ so it won't be picked up again on the next run. Call after the Salesforce quote has been successfully created.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Filename returned by email_read_pending (not the full path, just the name)"},
+            },
+            "required": ["filename"],
         },
     },
 ]
@@ -1789,6 +1812,140 @@ def tool_sf_get_opportunity_contacts(args):
     return {"contacts": contacts, "count": len(contacts)}
 
 
+def _decode_header_value(raw):
+    parts = email_decode_header(raw or "")
+    out = []
+    for fragment, enc in parts:
+        if isinstance(fragment, bytes):
+            out.append(fragment.decode(enc or "utf-8", errors="replace"))
+        else:
+            out.append(fragment)
+    return "".join(out)
+
+
+def _parse_eml(file_path):
+    """Parse a .eml file and return structured fields."""
+    with open(file_path, "rb") as f:
+        msg = email_lib.message_from_bytes(f.read())
+    subject = _decode_header_value(msg.get("Subject", ""))
+    from_ = _decode_header_value(msg.get("From", ""))
+    date_ = msg.get("Date", "")
+    body_parts = []
+    attachments = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            cd = str(part.get("Content-Disposition", ""))
+            if ct == "text/plain" and "attachment" not in cd:
+                charset = part.get_content_charset() or "utf-8"
+                body_parts.append(part.get_payload(decode=True).decode(charset, errors="replace"))
+            elif "attachment" in cd:
+                fn = part.get_filename()
+                if fn:
+                    attachments.append(_decode_header_value(fn))
+    else:
+        charset = msg.get_content_charset() or "utf-8"
+        payload = msg.get_payload(decode=True)
+        if payload:
+            body_parts.append(payload.decode(charset, errors="replace"))
+    return {
+        "from": from_,
+        "subject": subject,
+        "date": date_,
+        "body": "\n".join(body_parts),
+        "attachments": attachments,
+    }
+
+
+def _parse_txt(file_path):
+    """Parse a plain-text email file. Tries to extract From/Subject/Date headers if present."""
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    from_ = subject = date_ = ""
+    body_lines = []
+    in_headers = True
+    for line in content.splitlines():
+        if in_headers:
+            low = line.lower()
+            if low.startswith("from:"):
+                from_ = line[5:].strip()
+            elif low.startswith("subject:"):
+                subject = line[8:].strip()
+            elif low.startswith("date:"):
+                date_ = line[5:].strip()
+            elif line.strip() == "":
+                in_headers = False
+            else:
+                body_lines.append(line)
+        else:
+            body_lines.append(line)
+    return {
+        "from": from_,
+        "subject": subject,
+        "date": date_,
+        "body": "\n".join(body_lines),
+        "attachments": [],
+    }
+
+
+def tool_email_read_pending(args):
+    limit = min(args.get("limit", 5), 20)
+    pending_dir = os.path.join(VAULT_PATH, "Inbox", "Emails", "pending") if VAULT_PATH else None
+    if not pending_dir or not os.path.isdir(pending_dir):
+        return {
+            "emails": [],
+            "count": 0,
+            "pending_dir": pending_dir,
+            "message": (
+                "Pending folder not found. "
+                "Create Inbox/Emails/pending/ in your vault and have Power Automate "
+                "save email files there, or drag .eml files into it manually."
+            ),
+        }
+
+    files = sorted(
+        [f for f in Path(pending_dir).iterdir() if f.suffix in (".eml", ".txt", ".md") and f.is_file()],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+
+    emails = []
+    for f in files:
+        try:
+            if f.suffix == ".eml":
+                parsed = _parse_eml(str(f))
+            else:
+                parsed = _parse_txt(str(f))
+            parsed["filename"] = f.name
+            parsed["path"] = str(f)
+            parsed["body"] = parsed["body"][:8000]
+            parsed["body_truncated"] = len(parsed["body"]) > 8000
+            emails.append(parsed)
+        except Exception as e:
+            emails.append({"filename": f.name, "error": str(e)})
+
+    return {"emails": emails, "count": len(emails), "pending_dir": pending_dir}
+
+
+def tool_email_archive_pending(args):
+    filename = args["filename"]
+    if not VAULT_PATH:
+        return {"error": "VAULT_PATH not set."}
+    pending_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "pending"
+    processed_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "processed"
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    src = pending_dir / filename
+    if not src.exists():
+        return {"error": f"File not found in pending/: {filename}"}
+    dst = processed_dir / filename
+    # Avoid overwriting if same name already in processed
+    if dst.exists():
+        stem, suffix = os.path.splitext(filename)
+        dst = processed_dir / f"{stem}_{int(datetime.now().timestamp())}{suffix}"
+    src.rename(dst)
+    return {"success": True, "archived_to": str(dst)}
+
+
 TOOL_FNS = {
     "sf_authenticate": tool_sf_authenticate,
     "sf_get_pipeline": tool_sf_get_pipeline,
@@ -1820,6 +1977,8 @@ TOOL_FNS = {
     "sf_describe_object": tool_sf_describe_object,
     "sf_upload_file": tool_sf_upload_file,
     "sf_get_opportunity_contacts": tool_sf_get_opportunity_contacts,
+    "email_read_pending": tool_email_read_pending,
+    "email_archive_pending": tool_email_archive_pending,
 }
 
 

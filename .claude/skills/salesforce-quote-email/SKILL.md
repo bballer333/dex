@@ -22,18 +22,72 @@ Salesforce isn't connected yet. I'll open a browser window — log in and approv
 
 ---
 
-## Step 1: Collect the Email
+## Step 1: Get the Email
+
+**Do not ask the user to paste anything yet.** First call `email_read_pending` silently.
+
+### If files are found in pending/:
+
+Show them and ask which to process:
+
+```
+📬 Found [N] email(s) in your quote inbox:
+
+  [1] From: [sender]
+      Subject: [subject]
+      Date: [date]
+      Attachments: [list or "none"]
+
+  [2] ...
+
+Which one? (reply with number, or "all" to process each one, or "paste" to enter a different email manually)
+```
+
+Wait for selection. Once confirmed, use that email's content for Step 2. After the quote is successfully created in Step 7, call `email_archive_pending` with the filename so it won't appear again.
+
+### If pending/ folder doesn't exist yet:
 
 Say:
 ```
-Paste the full email below — subject line, From/To/Date header, and body.
+Your quote inbox folder (Inbox/Emails/pending/) isn't set up yet.
 
-If you have attachments (PDFs, Word docs, Excel files), share their file paths on separate lines after the email. I'll extract what I can from the text and upload the files to Salesforce.
+**Quickest setup — Power Automate flow (5 min, one-time):**
+1. In Power Automate, create a new automated flow
+2. Trigger: "When a new email arrives" (Outlook connector)
+   → Filter: From = [customer domain] OR Subject contains "quote" / "pricing" / "RFQ"
+3. Action: "Create file" (OneDrive or SharePoint connector)
+   → Folder: [path to your vault]/Inbox/Emails/pending/
+   → File name: `@{formatDateTime(triggerOutputs()?['body/receivedDateTime'],'yyyyMMdd-HHmmss')}-@{triggerOutputs()?['body/from']}.txt`
+   → File content:
+     ```
+     From: @{triggerOutputs()?['body/from']}
+     Subject: @{triggerOutputs()?['body/subject']}
+     Date: @{triggerOutputs()?['body/receivedDateTime']}
 
-(If you're running on the web, note that file uploads from cloud sessions require the files to be accessible on the server where Dex is running.)
+     @{triggerOutputs()?['body/body']}
+     ```
+4. Save and test by forwarding a quote email to yourself
+
+Once set up, every matching email drops a text file into that folder automatically — then `/salesforce-quote-email` picks it up with no copy-paste.
+
+**Or — paste the email now:**
+Paste the full email text below (From/Subject/Date header + body). I'll parse it and we'll proceed.
 ```
 
-Wait for the user to provide the email. Do not proceed to Step 2 until you have it.
+Wait for the user to either confirm PA setup is done or paste an email.
+
+### Fallback: user pastes email
+
+Accept pasted email text in any format. Extract From, Subject, Date, and body from it. If they also share file paths for attachments, note those separately.
+
+---
+
+### Attachment note
+
+If attachment filenames are mentioned in the email body and the PA flow saved the email to the pending folder, the actual attachment files won't be there — just the text. Ask the user:
+```
+The email mentions attachments: [list]. Do you have the files saved somewhere? Share the file paths and I'll upload them to Salesforce.
+```
 
 ---
 
