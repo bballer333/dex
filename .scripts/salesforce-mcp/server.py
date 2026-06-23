@@ -178,6 +178,17 @@ def sf_post(tokens, path, payload):
         return json.loads(resp.read())
 
 
+def sf_get(tokens, path):
+    instance_url = tokens["instance_url"]
+    access_token = tokens["access_token"]
+    req = Request(
+        f"{instance_url}/services/data/v59.0/{path}",
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    )
+    with urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
 def sf_patch(tokens, path, payload):
     instance_url = tokens["instance_url"]
     access_token = tokens["access_token"]
@@ -460,7 +471,7 @@ TOOLS = [
     },
     {
         "name": "sf_create_quote",
-        "description": "Create a new Quote record in Salesforce linked to an Opportunity. Returns quote_id, quote_number, and a Salesforce URL. The quote starts in Draft status.",
+        "description": "Create a new Quote record in Salesforce linked to an Opportunity. Returns quote_id, quote_number, and a Salesforce URL. The quote starts in Draft status. Pass custom_fields to set any org-specific fields (e.g. Vendor__c, Machine_Type__c). Use sf_describe_object with object_name='Quote' to discover available custom fields.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -475,6 +486,7 @@ TOOLS = [
                 "billing_name": {"type": "string", "description": "Billing contact name"},
                 "shipping_name": {"type": "string", "description": "Shipping contact name"},
                 "shipping_terms": {"type": "string", "description": "Shipping terms (e.g. 'FOB Destination')"},
+                "custom_fields": {"type": "object", "description": "Any org-specific custom fields as a flat dict of Salesforce API field name → value. Example: {\"Vendor__c\": \"001abc\", \"Machine_Type__c\": \"Press Brake\"}"},
             },
             "required": ["opportunity_id", "name"],
         },
@@ -499,7 +511,7 @@ TOOLS = [
     },
     {
         "name": "sf_add_quote_line_item",
-        "description": "Add a product/machine line item to an existing Salesforce Quote. Requires a PricebookEntryId from sf_get_pricebook_entries. Use unit_price to override the catalog price.",
+        "description": "Add a single product/machine line item to an existing Salesforce Quote. Requires a PricebookEntryId from sf_get_pricebook_entries. Use unit_price to override the catalog price. Pass custom_fields for org-specific QuoteLineItem fields. For multiple line items in one call, use sf_add_quote_line_items instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -509,8 +521,48 @@ TOOLS = [
                 "unit_price": {"type": "number", "description": "Unit price (overrides pricebook list price)"},
                 "description": {"type": "string", "description": "Line item description — machine specs, model details, notes"},
                 "sort_order": {"type": "integer", "description": "Sort order for line item display"},
+                "custom_fields": {"type": "object", "description": "Org-specific custom fields as a flat dict of Salesforce API field name → value. Example: {\"Machine_Type__c\": \"Laser\", \"Model__c\": \"TruLaser 5030\"}"},
             },
             "required": ["quote_id", "pricebook_entry_id", "quantity"],
+        },
+    },
+    {
+        "name": "sf_add_quote_line_items",
+        "description": "Add multiple line items to a Salesforce Quote in a single call. Each item in the 'line_items' array must have pricebook_entry_id and quantity; unit_price, description, sort_order, and custom_fields are optional per item. Returns per-item success/failure so partial failures don't block the rest. Use this when you have 2+ products to add — saves round-trips vs calling sf_add_quote_line_item repeatedly.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "quote_id": {"type": "string", "description": "Salesforce Quote Id"},
+                "line_items": {
+                    "type": "array",
+                    "description": "List of line items to add",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pricebook_entry_id": {"type": "string", "description": "PricebookEntry Id"},
+                            "quantity": {"type": "number", "description": "Quantity"},
+                            "unit_price": {"type": "number", "description": "Override unit price"},
+                            "description": {"type": "string", "description": "Line item description"},
+                            "sort_order": {"type": "integer", "description": "Display sort order"},
+                            "custom_fields": {"type": "object", "description": "Custom fields for this line item"},
+                        },
+                        "required": ["pricebook_entry_id", "quantity"],
+                    },
+                },
+            },
+            "required": ["quote_id", "line_items"],
+        },
+    },
+    {
+        "name": "sf_describe_object",
+        "description": "Return field metadata for any Salesforce object (Quote, QuoteLineItem, Opportunity, Contact, Account, etc.). Shows all field names, labels, types, and whether they are custom fields (__c suffix). Use this before creating records to discover what custom fields are available in this org.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "object_name": {"type": "string", "description": "Salesforce API object name (e.g. 'Quote', 'QuoteLineItem', 'Opportunity', 'Account')"},
+                "custom_only": {"type": "boolean", "description": "If true, return only custom fields (__c). Default false returns all fields."},
+            },
+            "required": ["object_name"],
         },
     },
     {
@@ -1499,6 +1551,8 @@ def tool_sf_create_quote(args):
             payload[key] = args[field]
     if args.get("shipping_handling") is not None:
         payload["ShippingHandling"] = args["shipping_handling"]
+    if args.get("custom_fields"):
+        payload.update(args["custom_fields"])
 
     result = sf_post(tokens, "sobjects/Quote", payload)
     if not result.get("success"):
@@ -1578,11 +1632,90 @@ def tool_sf_add_quote_line_item(args):
         payload["Description"] = args["description"]
     if args.get("sort_order") is not None:
         payload["SortOrder"] = args["sort_order"]
+    if args.get("custom_fields"):
+        payload.update(args["custom_fields"])
 
     result = sf_post(tokens, "sobjects/QuoteLineItem", payload)
     if not result.get("success"):
         return {"error": "Failed to add line item", "errors": result.get("errors", [])}
     return {"success": True, "line_item_id": result.get("id"), "quote_id": args["quote_id"]}
+
+
+def tool_sf_add_quote_line_items(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    quote_id = args["quote_id"]
+    results = []
+    for idx, item in enumerate(args.get("line_items", [])):
+        payload = {
+            "QuoteId": quote_id,
+            "PricebookEntryId": item["pricebook_entry_id"],
+            "Quantity": item["quantity"],
+        }
+        if item.get("unit_price") is not None:
+            payload["UnitPrice"] = item["unit_price"]
+        if item.get("description"):
+            payload["Description"] = item["description"]
+        if item.get("sort_order") is not None:
+            payload["SortOrder"] = item["sort_order"]
+        if item.get("custom_fields"):
+            payload.update(item["custom_fields"])
+
+        r = sf_post(tokens, "sobjects/QuoteLineItem", payload)
+        if r.get("success"):
+            results.append({"index": idx, "success": True, "line_item_id": r.get("id"), "pricebook_entry_id": item["pricebook_entry_id"]})
+        else:
+            results.append({"index": idx, "success": False, "errors": r.get("errors", []), "pricebook_entry_id": item["pricebook_entry_id"]})
+
+    succeeded = sum(1 for r in results if r["success"])
+    return {
+        "quote_id": quote_id,
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
+def tool_sf_describe_object(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    object_name = args["object_name"]
+    custom_only = args.get("custom_only", False)
+
+    from urllib.parse import quote as url_quote
+    url = f"sobjects/{url_quote(object_name)}/describe"
+    try:
+        data = sf_get(tokens, url)
+    except Exception as e:
+        return {"error": f"Describe failed: {e}"}
+
+    fields = []
+    for f in data.get("fields", []):
+        is_custom = f.get("name", "").endswith("__c")
+        if custom_only and not is_custom:
+            continue
+        fields.append({
+            "name": f.get("name"),
+            "label": f.get("label"),
+            "type": f.get("type"),
+            "custom": is_custom,
+            "updateable": f.get("updateable", True),
+            "nillable": f.get("nillable", True),
+            "length": f.get("length"),
+            "pick_values": [p["value"] for p in f.get("picklistValues", []) if p.get("active")] if f.get("picklistValues") else None,
+        })
+
+    return {
+        "object": object_name,
+        "label": data.get("label"),
+        "field_count": len(fields),
+        "fields": fields,
+    }
 
 
 def tool_sf_upload_file(args):
@@ -1683,6 +1816,8 @@ TOOL_FNS = {
     "sf_get_pricebooks": tool_sf_get_pricebooks,
     "sf_get_pricebook_entries": tool_sf_get_pricebook_entries,
     "sf_add_quote_line_item": tool_sf_add_quote_line_item,
+    "sf_add_quote_line_items": tool_sf_add_quote_line_items,
+    "sf_describe_object": tool_sf_describe_object,
     "sf_upload_file": tool_sf_upload_file,
     "sf_get_opportunity_contacts": tool_sf_get_opportunity_contacts,
 }

@@ -116,6 +116,8 @@ Wait for the user's selection before continuing.
 
 After the opportunity is confirmed, use `sf_get_opportunity` to pull its full details (Account, Stage, close date, existing contacts, existing quotes).
 
+**Discover custom fields (do this once per session):** Call `sf_describe_object` with `object_name="Quote"` and `custom_only=true`, then call it again with `object_name="QuoteLineItem"` and `custom_only=true`. Surface any custom fields that have values extractable from the email (e.g. `Machine_Type__c`, `Vendor__c`) and ask for any required custom fields that couldn't be extracted.
+
 Then build a gap list — fields needed to create the quote that weren't found in the email or Salesforce:
 
 Required:
@@ -128,6 +130,7 @@ Optional but commonly needed:
 - Price Book (call `sf_get_pricebooks` and show options)
 - Products / line items (for each machine: model, quantity, price)
 - Billing/Shipping name
+- Any required custom fields found via `sf_describe_object`
 
 Ask for missing required fields in one consolidated block — not one at a time:
 
@@ -143,6 +146,8 @@ A few things I need before I can create the quote:
     [1] Standard Price Book (default)
     [2] [Other pricebook name if found]
     Reply with number or "skip" if not using a price book.
+
+  [Any required custom Quote fields not extractable from the email — show label, not API name]
 
 Reply with answers in order, or press Enter to accept a suggestion.
 ```
@@ -170,7 +175,12 @@ For each machine/product identified in the email:
      b) Skip — add the line item manually in Salesforce after creation
    ```
 
-4. Collect the confirmed line items with: product name, quantity, unit price, description.
+4. For each confirmed line item, also collect any custom QuoteLineItem fields discovered in Step 4 (e.g. `Machine_Type__c`, `Model__c`, serial number fields). Pre-fill from the email where possible and confirm.
+
+5. Collect the full confirmed list: product name, quantity, unit price, description, and any custom field values.
+
+**Single item:** will use `sf_add_quote_line_item` in Step 7.
+**Multiple items:** will use `sf_add_quote_line_items` (one batch call) in Step 7.
 
 If there are no products in the pricebook at all, skip line items and say:
 ```
@@ -243,11 +253,13 @@ Call `sf_create_quote` with all confirmed fields. If it fails, show the error an
 
 ### 7b — Add Line Items
 
-For each confirmed line item, call `sf_add_quote_line_item`.
+**If one line item:** call `sf_add_quote_line_item` with `custom_fields` set to any custom QuoteLineItem values.
+
+**If two or more line items:** call `sf_add_quote_line_items` once with the full array — each item can carry its own `custom_fields`. This is one API call regardless of how many items there are.
 
 ```
-✓ Line item added: [Product Name] × [Qty]
-✗ Line item failed: [Product Name] — [error] (you'll need to add this manually)
+✓ Line items added: [N]/[N] (all succeeded)
+✗ Line item failed: [Product Name] — [error] (you'll need to add this manually in Salesforce)
 ```
 
 ### 7c — Upload Attachments
