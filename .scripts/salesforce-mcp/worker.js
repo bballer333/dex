@@ -48,8 +48,7 @@ const TOOLS = [
       type: "object",
       properties: {
         account_name: { type: "string", description: "Filter by account name (partial match)" },
-        stage:        { type: "string", description: "Filter by stage name (partial match)" },
-        limit:        { type: "number", description: "Max results (default 20)" }
+        stage:        { type: "string", description: "Filter by stage name (partial match)" }
       }
     }
   },
@@ -409,8 +408,12 @@ async function getSFToken(env) {
 
 // ─── SOQL Helper ─────────────────────────────────────────────────────────────
 
-// Objects that don't use OwnerId scoping (assets belong to accounts, not users)
-const NO_OWNER_FILTER = ["FROM ASSET", "FROM QUOTE", "FROM CONTENTDOCUMENTLINK", "FROM OPPORTUNITYCONTACTROLE"];
+// Objects that don't use OwnerId scoping.
+// - Assets/quotes are account-level records
+// - Contacts are account-scoped, not user-scoped
+// - Tasks in sub-queries (get_opportunity, get_account_details) should show all activity;
+//   get_open_tasks / get_completed_tasks already embed OwnerId explicitly so injection is skipped
+const NO_OWNER_FILTER = ["FROM ASSET", "FROM QUOTE", "FROM CONTENTDOCUMENTLINK", "FROM OPPORTUNITYCONTACTROLE", "FROM CONTACT", "FROM TASK"];
 
 async function sfQuery(soql, token, instance) {
   // Inject OwnerId filter so we only see Chris's records (skipped for asset/quote objects)
@@ -438,6 +441,8 @@ async function sfQuery(soql, token, instance) {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }
   });
   const data = await res.json();
+  // SF returns errors as either [{errorCode, message}] or {errorCode, message}
+  if (Array.isArray(data) && data[0]?.errorCode) throw new Error(data[0].message || data[0].errorCode);
   if (data.errorCode) throw new Error(data.message || data.errorCode);
   return data.records || [];
 }
@@ -507,7 +512,7 @@ async function callTool(name, args, token, instance) {
     if (args.account_name) where += ` AND Account.Name LIKE '%${args.account_name.replace(/'/g, "\\'")}%'`;
     if (args.stage)        where += ` AND StageName LIKE '%${args.stage.replace(/'/g, "\\'")}%'`;
     return sfQuery(
-      `SELECT Id, Name, StageName, Amount, CloseDate, Account.Name, Description FROM Opportunity WHERE ${where} ORDER BY CloseDate ASC LIMIT ${args.limit || 20}`,
+      `SELECT Id, Name, StageName, Amount, CloseDate, Account.Name, Account.Id, Description FROM Opportunity WHERE ${where} ORDER BY CloseDate ASC LIMIT ${args.limit || 20}`,
       token, instance
     );
   }
@@ -615,7 +620,7 @@ async function callTool(name, args, token, instance) {
     const [contacts, quotes, tasks] = await Promise.all([
       sfQuery(`SELECT Contact.Name, Contact.Email, Contact.Title, Role, IsPrimary FROM OpportunityContactRole WHERE OpportunityId = '${opp.Id}'`, token, instance),
       sfQuery(`SELECT Id, QuoteNumber, Name, Status, GrandTotal, ExpirationDate FROM Quote WHERE OpportunityId = '${opp.Id}' ORDER BY CreatedDate DESC LIMIT 10`, token, instance),
-      sfQuery(`SELECT Subject, Status, ActivityDate, Who.Name FROM Task WHERE WhatId = '${opp.Id}' ORDER BY CreatedDate DESC LIMIT 10`, token, instance),
+      sfQuery(`SELECT Subject, Status, ActivityDate, Who.Name, Owner.Name FROM Task WHERE WhatId = '${opp.Id}' ORDER BY CreatedDate DESC LIMIT 10`, token, instance),
     ]);
     return { opportunity: opp, contacts, quotes, recent_activity: tasks };
   }
@@ -658,7 +663,14 @@ async function callTool(name, args, token, instance) {
     });
     if (!res.ok) throw new Error(`SF returned ${res.status}`);
     const buffer = await res.arrayBuffer();
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+    // Chunked to avoid "Maximum call stack size exceeded" on large files
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    const b64 = btoa(binary);
     const contentType = res.headers.get("Content-Type") || "application/octet-stream";
     return { success: true, content_version_id: args.content_version_id, content_type: contentType, size_bytes: buffer.byteLength, base64: b64 };
   }
@@ -668,7 +680,7 @@ async function callTool(name, args, token, instance) {
     const acctFilter = args.account_id ? `AccountId = '${args.account_id}'` : `Account.Name LIKE '%${args.account_name.replace(/'/g, "\\'")}%'`;
     const compFilter = args.include_competitor === false ? " AND IsCompetitorProduct = false" : "";
     const assets = await sfQuery(
-      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, UCCID__c, UCC_Status__c, UCC_New_or_Used__c, Sale_or_Lease__c, InstallDate, Purchase_Date__c, UsageEndDate, Status, IsCompetitorProduct, Price, Warranty_Length__c, FollowUpDate__c, Description, Account.Name, Account.Id, Contact.Name, Opportunity__c FROM Asset WHERE ${acctFilter}${compFilter} ORDER BY InstallDate DESC NULLS LAST LIMIT 200`,
+      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, UCCID__c, UCC_Status__c, UCC_New_or_Used__c, Sale_or_Lease__c, InstallDate, PurchaseDate, UsageEndDate, Status, IsCompetitorProduct, Price, Warranty_Length__c, FollowUpDate__c, Description, Account.Name, Account.Id, Contact.Name, Opportunity__c FROM Asset WHERE ${acctFilter}${compFilter} ORDER BY InstallDate DESC NULLS LAST LIMIT 200`,
       token, instance
     );
     const parsed = assets.map(parseAsset);
@@ -698,7 +710,7 @@ async function callTool(name, args, token, instance) {
     if (args.status)         filters.push(`Status = '${args.status}'`);
     const where = filters.length ? filters.join(" AND ") : "Id != null";
     const assets = await sfQuery(
-      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, Sale_or_Lease__c, InstallDate, Purchase_Date__c, UsageEndDate, Status, IsCompetitorProduct, Price, Account.Name, Account.Id FROM Asset WHERE ${where} ORDER BY Account.Name ASC, InstallDate DESC NULLS LAST LIMIT ${args.limit || 100}`,
+      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, Sale_or_Lease__c, InstallDate, PurchaseDate, UsageEndDate, Status, IsCompetitorProduct, Price, Account.Name, Account.Id FROM Asset WHERE ${where} ORDER BY Account.Name ASC, InstallDate DESC NULLS LAST LIMIT ${args.limit || 100}`,
       token, instance
     );
     return { assets: assets.map(parseAsset), count: assets.length };
@@ -709,7 +721,7 @@ async function callTool(name, args, token, instance) {
     if (args.account_name) filters.push(`Account.Name LIKE '%${args.account_name.replace(/'/g, "\\'")}%'`);
     if (args.machine_type) filters.push(`Machine_Type_New__c LIKE '%${args.machine_type.replace(/'/g, "\\'")}%'`);
     const assets = await sfQuery(
-      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, InstallDate, Purchase_Date__c, UsageEndDate, Status, Account.Name, Account.Id, Description FROM Asset WHERE ${filters.join(" AND ")} ORDER BY Account.Name ASC, InstallDate DESC NULLS LAST LIMIT 200`,
+      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, InstallDate, PurchaseDate, UsageEndDate, Status, Account.Name, Account.Id, Description FROM Asset WHERE ${filters.join(" AND ")} ORDER BY Account.Name ASC, InstallDate DESC NULLS LAST LIMIT 200`,
       token, instance
     );
     const parsed = assets.map(parseAsset);
@@ -738,7 +750,7 @@ async function callTool(name, args, token, instance) {
     const days = args.days || 30;
     const compFilter = args.include_competitor === false ? " AND IsCompetitorProduct = false" : "";
     const assets = await sfQuery(
-      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, UCCID__c, UCC_Status__c, Sale_or_Lease__c, InstallDate, Purchase_Date__c, UsageEndDate, Status, IsCompetitorProduct, Price, Account.Name, Account.Id, CreatedDate FROM Asset WHERE CreatedDate >= LAST_N_DAYS:${days}${compFilter} ORDER BY CreatedDate DESC LIMIT 500`,
+      `SELECT Id, Name, Machine_Type_New__c, ModelName__c, Builder__c, SerialNumber, UCC_Vendor__c, UCCID__c, UCC_Status__c, Sale_or_Lease__c, InstallDate, PurchaseDate, UsageEndDate, Status, IsCompetitorProduct, Price, Account.Name, Account.Id, CreatedDate FROM Asset WHERE CreatedDate >= LAST_N_DAYS:${days}${compFilter} ORDER BY CreatedDate DESC LIMIT 500`,
       token, instance
     );
     const parsed = assets.map(parseAsset);
@@ -801,8 +813,9 @@ function mcpResult(id, result) {
 }
 
 function mcpError(id, code, message) {
+  // MCP/JSON-RPC spec: errors are carried in the response body, HTTP status is always 200
   return new Response(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }), {
-    status: 400,
+    status: 200,
     headers: { "Content-Type": "application/json", ...cors() }
   });
 }
