@@ -23,11 +23,12 @@ Ask the user:
 ### Step 2: Pull Matching Accounts from Salesforce
 
 Use Salesforce MCP tools to find matching contacts based on the criteria:
-- `sf_get_pipeline` — filter by vendor, machine type, or stage
-- `sf_get_account` — get contacts for specific accounts
-- `sf_get_recent_activity` — find accounts with recent activity on relevant topics
-- `sf_search_contacts` — search by name or role
-- `sf_search_assets` — search assets across all accounts by machine type, builder/manufacturer, sale-or-lease status, or other criteria
+- `get_opportunities` (salesforce-remote) — filter by account name or stage
+- `search_accounts` (salesforce-remote) — get contacts for specific accounts
+- `get_account_contacts` (salesforce-remote) — get all contacts under an account
+- `search_contacts` (salesforce-remote) — search by name or role
+- `sf_get_recent_activity` (local salesforce MCP) — find accounts with recent activity on relevant topics
+- `sf_search_assets` (local salesforce MCP) — search assets across all accounts by machine type, builder/manufacturer, sale-or-lease status, or other criteria
 
 Build a tiered target list:
 - **Tier 1** — Actively in-market (open opp matching the topic, hot stage)

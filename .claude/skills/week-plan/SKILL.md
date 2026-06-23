@@ -40,7 +40,7 @@ Use the email MCP (retool-email or gmail) to get recent emails (last 3–5 days)
 
 ### 2.3 Salesforce Opportunities
 
-Use the Salesforce MCP to pull open opportunities. Focus on:
+Call `get_opportunities` from the salesforce-remote MCP to pull open opportunities. Focus on:
 - Deals with close dates this week or next
 - Opportunities in late stages (Proposal, Negotiation, Verbal)
 - Any deals with recent activity or stale follow-ups
