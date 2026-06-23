@@ -11,20 +11,21 @@ Turn inbound quote-request emails into Salesforce Quotes in a guided, review-bef
 
 ---
 
-## Step 0: Check Authentication
+## Step 0: Check Authentication + Sync
 
-Call `sf_authenticate` only if Salesforce isn't connected yet. If tokens already exist (sf_tokens.json present), skip this step silently and proceed.
+Run both silently before saying anything to the user:
 
-If not authenticated:
-```
-Salesforce isn't connected yet. I'll open a browser window — log in and approve access, then come back here.
-```
+1. **Git pull** — run `git pull origin main --ff-only` (or the default branch) to pick up any emails PA committed since this session started. Ignore errors (offline, already up to date).
+2. **SF auth check** — if `sf_authenticate` tokens don't exist, prompt:
+   ```
+   Salesforce isn't connected yet. I'll open a browser window — log in and approve access, then come back here.
+   ```
 
 ---
 
 ## Step 1: Get the Email
 
-**Do not ask the user to paste anything yet.** First call `email_read_pending` silently.
+**Do not ask the user to paste anything yet.** Call `email_read_pending` silently.
 
 ### If files are found in pending/:
 
@@ -40,45 +41,28 @@ Show them and ask which to process:
 
   [2] ...
 
-Which one? (reply with number, or "all" to process each one, or "paste" to enter a different email manually)
+Which one? (number, "all" to process each in sequence, or "paste" to enter a different email manually)
 ```
 
-Wait for selection. Once confirmed, use that email's content for Step 2. After the quote is successfully created in Step 7, call `email_archive_pending` with the filename so it won't appear again.
+Wait for selection. Use that email's content for Step 2. After the quote is successfully created in Step 7, call `email_archive_pending` with the filename — it moves the file to `processed/` and commits the change back to git.
 
-### If pending/ folder doesn't exist yet:
+### If pending/ is empty or the folder doesn't exist:
 
-Say:
 ```
-Your quote inbox folder (Inbox/Emails/pending/) isn't set up yet.
+No emails in your quote inbox yet.
 
-**Quickest setup — Power Automate flow (5 min, one-time):**
-1. In Power Automate, create a new automated flow
-2. Trigger: "When a new email arrives" (Outlook connector)
-   → Filter: From = [customer domain] OR Subject contains "quote" / "pricing" / "RFQ"
-3. Action: "Create file" (OneDrive or SharePoint connector)
-   → Folder: [path to your vault]/Inbox/Emails/pending/
-   → File name: `@{formatDateTime(triggerOutputs()?['body/receivedDateTime'],'yyyyMMdd-HHmmss')}-@{triggerOutputs()?['body/from']}.txt`
-   → File content:
-     ```
-     From: @{triggerOutputs()?['body/from']}
-     Subject: @{triggerOutputs()?['body/subject']}
-     Date: @{triggerOutputs()?['body/receivedDateTime']}
+**Power Automate setup (one-time, ~5 min):**
+See the setup guide below, then forward yourself a test email and run
+/salesforce-quote-email again.
 
-     @{triggerOutputs()?['body/body']}
-     ```
-4. Save and test by forwarding a quote email to yourself
-
-Once set up, every matching email drops a text file into that folder automatically — then `/salesforce-quote-email` picks it up with no copy-paste.
-
-**Or — paste the email now:**
-Paste the full email text below (From/Subject/Date header + body). I'll parse it and we'll proceed.
+Or — paste an email now and I'll process it directly.
 ```
 
-Wait for the user to either confirm PA setup is done or paste an email.
+Show the setup guide from the ## Power Automate Setup section at the bottom of this file, then wait.
 
 ### Fallback: user pastes email
 
-Accept pasted email text in any format. Extract From, Subject, Date, and body from it. If they also share file paths for attachments, note those separately.
+Accept pasted text in any format. Extract From, Subject, Date, and body. Note any attachment file paths they share separately.
 
 ---
 
@@ -409,3 +393,88 @@ If the email requests multiple machines:
 - Search for each one separately in the pricebook
 - Display all in the confirmation screen before creating anything
 - Attach all source documents to the quote (they all reference the same request)
+
+---
+
+## Power Automate Setup Guide
+
+**Goal:** When a quote-request email arrives in your Outlook inbox, PA automatically commits a text file to `Inbox/Emails/pending/` in your GitHub repo (`bballer333/dex`). When you run `/salesforce-quote-email`, the skill pulls that file and processes it — no copy-paste needed.
+
+**One-time setup (~5–10 min):**
+
+### Step 1 — Create the flow
+
+1. Go to [make.powerautomate.com](https://make.powerautomate.com) and sign in
+2. Click **+ Create** → **Automated cloud flow**
+3. Name it: `Quote Email → Dex`
+4. Trigger: search for **"When a new email arrives (V3)"** → Outlook 365 → click **Create**
+
+### Step 2 — Configure the trigger
+
+In the trigger settings:
+- **Folder:** Inbox (or whichever folder quote emails land in)
+- **Include Attachments:** No (we only need the body text for now)
+- **Only with Attachments:** No
+- Click **Show advanced options**
+  - **Subject Filter:** `quote` (or leave blank and filter later)
+  - **From:** leave blank to catch all, or enter customer domains separated by `;`
+
+### Step 3 — Add a Condition (optional but recommended)
+
+Add a **Condition** step to only run when the email looks like a quote request:
+
+- Click **+ New step** → search **Condition**
+- Condition: `Subject` **contains** `quote` **OR** `Subject` **contains** `RFQ` **OR** `Subject` **contains** `pricing`
+- Put the next step inside the **Yes** branch
+
+### Step 4 — Add the GitHub action
+
+Inside the Yes branch (or directly after the trigger if you skipped the condition):
+
+1. Click **+ Add an action** → search **GitHub** → select **"Create file"**
+2. Sign in to GitHub with your account when prompted
+3. Fill in the action:
+   - **Repository Owner:** `bballer333`
+   - **Repository Name:** `dex`
+   - **Branch:** `main` (or whatever your default branch is)
+   - **File Path:** click in the field, type:
+     ```
+     Inbox/Emails/pending/
+     ```
+     Then click the lightning bolt (dynamic content) and insert:
+     - `Received Time` formatted — click **Expression** tab and enter:
+       ```
+       formatDateTime(triggerOutputs()?['body/receivedDateTime'], 'yyyyMMdd-HHmmss')
+       ```
+     Then type `-quote.txt` after it. Full path example: `Inbox/Emails/pending/20260623-143022-quote.txt`
+   - **File Content:** click the field, then use **Expression** tab to build:
+     ```
+     concat(
+       'From: ', triggerOutputs()?['body/from'], decodeUriComponent('%0A'),
+       'Subject: ', triggerOutputs()?['body/subject'], decodeUriComponent('%0A'),
+       'Date: ', triggerOutputs()?['body/receivedDateTime'], decodeUriComponent('%0A'),
+       decodeUriComponent('%0A'),
+       triggerOutputs()?['body/body']
+     )
+     ```
+   - **Commit Message:** `PA: incoming quote email from @{triggerOutputs()?['body/from']}`
+
+### Step 5 — Save and test
+
+1. Click **Save**
+2. Forward yourself a sample quote email (or ask a colleague to send one)
+3. Watch the flow run in the **Run history** panel
+4. Then open a Claude Code session, run `/salesforce-quote-email`, and confirm it picks up the file
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Flow didn't trigger | Check the folder filter — make sure the email landed in the folder you set |
+| GitHub action fails with 422 | The file path might already exist — add a timestamp to the filename to ensure uniqueness |
+| Body content is HTML | PA sends HTML by default; add a **"Html to text"** step before the GitHub action and use its output instead of `body/body` |
+| File shows up but body is blank | Some Outlook environments use `body/bodyPreview` — try that field instead |
+
+### After setup
+
+Every matching email automatically creates a file in `Inbox/Emails/pending/`. Run `/salesforce-quote-email` any time — it syncs with GitHub first, shows you what's waiting, and processes your choice end-to-end.

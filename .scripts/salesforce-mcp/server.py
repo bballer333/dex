@@ -1928,6 +1928,7 @@ def tool_email_read_pending(args):
 
 
 def tool_email_archive_pending(args):
+    import subprocess
     filename = args["filename"]
     if not VAULT_PATH:
         return {"error": "VAULT_PATH not set."}
@@ -1938,12 +1939,26 @@ def tool_email_archive_pending(args):
     if not src.exists():
         return {"error": f"File not found in pending/: {filename}"}
     dst = processed_dir / filename
-    # Avoid overwriting if same name already in processed
     if dst.exists():
         stem, suffix = os.path.splitext(filename)
         dst = processed_dir / f"{stem}_{int(datetime.now().timestamp())}{suffix}"
     src.rename(dst)
-    return {"success": True, "archived_to": str(dst)}
+
+    # Commit the move back to git so the repo stays in sync
+    git_result = {"committed": False}
+    try:
+        subprocess.run(["git", "add", str(src), str(dst)], cwd=VAULT_PATH, capture_output=True, timeout=15)
+        r = subprocess.run(
+            ["git", "commit", "-m", f"archive quote email: {filename}"],
+            cwd=VAULT_PATH, capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0:
+            subprocess.run(["git", "push", "origin", "HEAD", "--quiet"], cwd=VAULT_PATH, capture_output=True, timeout=30)
+            git_result = {"committed": True, "pushed": True}
+    except Exception as e:
+        git_result = {"committed": False, "git_error": str(e)}
+
+    return {"success": True, "archived_to": str(dst), "git": git_result}
 
 
 TOOL_FNS = {
