@@ -31,6 +31,8 @@ fuzzy-search any of these, or just ask Dex in plain language.
 ## 💰 Sales & Pipeline
 
 - **/pipeline-sync** — Sync Salesforce opportunities into project pages with quotes and contact links
+- **/pipeline-review** — Weekly pipeline activity review — surface recent activity across all deals, select what to log to Salesforce, and sync in one shot
+- **/salesforce-quote-email** — Parse an inbound quote-request email, match Salesforce records, collect any missing details interactively, and create a Quote linked to the correct Opportunity
 
 ## 📁 Projects & Tasks
 
