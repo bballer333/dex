@@ -443,6 +443,100 @@ TOOLS = [
             },
         },
     },
+    # ── Quote Creation ────────────────────────────────────────────────────────────
+    {
+        "name": "sf_search_opportunities",
+        "description": "Search open opportunities by account name, contact name, opportunity name, or machine/application context. Returns ranked matches. Use to find the right opportunity before creating a quote.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_name": {"type": "string", "description": "Company/account name (partial match)"},
+                "contact_name": {"type": "string", "description": "Contact name (partial match) — searches via OpportunityContactRole"},
+                "opportunity_name": {"type": "string", "description": "Opportunity name keywords (partial match)"},
+                "machine_type": {"type": "string", "description": "Machine type or context (searches Name and Description)"},
+                "limit": {"type": "integer", "description": "Max results per search path (default 10)"},
+            },
+        },
+    },
+    {
+        "name": "sf_create_quote",
+        "description": "Create a new Quote record in Salesforce linked to an Opportunity. Returns quote_id, quote_number, and a Salesforce URL. The quote starts in Draft status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "opportunity_id": {"type": "string", "description": "Salesforce Opportunity Id to link this quote to (required)"},
+                "name": {"type": "string", "description": "Quote name (e.g. 'Acme Corp - TruBend 5085 Quote')"},
+                "expiration_date": {"type": "string", "description": "Quote expiration date (YYYY-MM-DD)"},
+                "status": {"type": "string", "description": "Quote status — Draft (default), Needs Review, Approved, Presented, Accepted, Denied"},
+                "pricebook_id": {"type": "string", "description": "Pricebook2 Id. Omit to use the Standard Pricebook."},
+                "payment_terms": {"type": "string", "description": "Payment terms text (e.g. 'Net 30')"},
+                "shipping_handling": {"type": "number", "description": "Shipping and handling amount"},
+                "description": {"type": "string", "description": "Quote description or internal notes"},
+                "billing_name": {"type": "string", "description": "Billing contact name"},
+                "shipping_name": {"type": "string", "description": "Shipping contact name"},
+                "shipping_terms": {"type": "string", "description": "Shipping terms (e.g. 'FOB Destination')"},
+            },
+            "required": ["opportunity_id", "name"],
+        },
+    },
+    {
+        "name": "sf_get_pricebooks",
+        "description": "List all active pricebooks in Salesforce. Use to find the correct Pricebook2Id before creating a quote or searching for products.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sf_get_pricebook_entries",
+        "description": "Search for products/machines in a Salesforce pricebook. Returns PricebookEntryId, product name, code, and list price — needed to add line items to a quote.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pricebook_id": {"type": "string", "description": "Pricebook2 Id (use sf_get_pricebooks to find)"},
+                "product_name": {"type": "string", "description": "Product or machine name to search (partial match, optional — omit to list all)"},
+                "limit": {"type": "integer", "description": "Max results (default 25)"},
+            },
+            "required": ["pricebook_id"],
+        },
+    },
+    {
+        "name": "sf_add_quote_line_item",
+        "description": "Add a product/machine line item to an existing Salesforce Quote. Requires a PricebookEntryId from sf_get_pricebook_entries. Use unit_price to override the catalog price.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "quote_id": {"type": "string", "description": "Salesforce Quote Id"},
+                "pricebook_entry_id": {"type": "string", "description": "PricebookEntry Id (from sf_get_pricebook_entries)"},
+                "quantity": {"type": "number", "description": "Quantity"},
+                "unit_price": {"type": "number", "description": "Unit price (overrides pricebook list price)"},
+                "description": {"type": "string", "description": "Line item description — machine specs, model details, notes"},
+                "sort_order": {"type": "integer", "description": "Sort order for line item display"},
+            },
+            "required": ["quote_id", "pricebook_entry_id", "quantity"],
+        },
+    },
+    {
+        "name": "sf_upload_file",
+        "description": "Upload a local file to Salesforce and link it to a record (Quote, Opportunity, Task, etc.). Reads the file from disk, encodes it, and creates a ContentVersion linked via FirstPublishLocationId.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to the file, or path relative to vault root"},
+                "title": {"type": "string", "description": "File title in Salesforce (defaults to filename if omitted)"},
+                "linked_record_id": {"type": "string", "description": "Salesforce record Id to attach the file to (Quote Id, Opportunity Id, etc.)"},
+            },
+            "required": ["file_path", "linked_record_id"],
+        },
+    },
+    {
+        "name": "sf_get_opportunity_contacts",
+        "description": "Get all contacts linked to a Salesforce opportunity via OpportunityContactRole. Returns contact name, email, phone, title, and their role on the opportunity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "opportunity_id": {"type": "string", "description": "Salesforce Opportunity Id"},
+            },
+            "required": ["opportunity_id"],
+        },
+    },
     {
         "name": "sf_get_financed_deals",
         "description": "Get Project Management records (machines you've sold) with close dates to calculate predicted replacement windows. Uses 54/60-month lease terms to identify which customers are entering their buying window. Optionally filter by account name, sales rep, or how many months ahead to look.",
@@ -1313,6 +1407,255 @@ def tool_sf_get_financed_deals(args):
     }
 
 
+def tool_sf_search_opportunities(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    limit = args.get("limit", 10)
+    owner_filter = f"AND OwnerId = '{OWNER_ID}'" if OWNER_ID else ""
+
+    filters = ["IsClosed = false"]
+    if args.get("account_name"):
+        filters.append(f"Account.Name LIKE '%{args['account_name']}%'")
+    if args.get("opportunity_name"):
+        filters.append(f"Name LIKE '%{args['opportunity_name']}%'")
+    if args.get("machine_type"):
+        mt = args["machine_type"].replace("'", "\\'")
+        filters.append(f"(Name LIKE '%{mt}%' OR Description LIKE '%{mt}%')")
+
+    where = " AND ".join(filters)
+    soql = f"""
+        SELECT Id, Name, StageName, Amount, CloseDate, Probability,
+               Account.Name, Account.Id, Owner.Name, Description, NextStep
+        FROM Opportunity
+        WHERE {where} {owner_filter}
+        ORDER BY LastModifiedDate DESC
+        LIMIT {limit}
+    """
+    result = sf_query(tokens, soql)
+    seen_ids = set()
+
+    def _map_opp(r):
+        return {
+            "id": r["Id"],
+            "name": r["Name"],
+            "stage": r.get("StageName"),
+            "amount": r.get("Amount"),
+            "close_date": r.get("CloseDate"),
+            "account": (r.get("Account") or {}).get("Name"),
+            "account_id": (r.get("Account") or {}).get("Id"),
+            "owner": (r.get("Owner") or {}).get("Name"),
+            "probability": r.get("Probability"),
+            "description": r.get("Description"),
+            "next_step": r.get("NextStep"),
+        }
+
+    opps = []
+    for r in result.get("records", []):
+        seen_ids.add(r["Id"])
+        opps.append(_map_opp(r))
+
+    # Contact-based search via OpportunityContactRole
+    if args.get("contact_name") and len(opps) < limit:
+        cname = args["contact_name"].replace("'", "\\'")
+        c_result = sf_query(tokens, f"SELECT Id FROM Contact WHERE Name LIKE '%{cname}%' LIMIT 5")
+        for c in c_result.get("records", []):
+            role_result = sf_query(tokens, f"SELECT OpportunityId FROM OpportunityContactRole WHERE ContactId = '{c['Id']}' LIMIT 10")
+            for role in role_result.get("records", []):
+                oid = role["OpportunityId"]
+                if oid not in seen_ids:
+                    seen_ids.add(oid)
+                    opp_result = sf_query(tokens, f"""
+                        SELECT Id, Name, StageName, Amount, CloseDate, Probability,
+                               Account.Name, Account.Id, Owner.Name, Description, NextStep
+                        FROM Opportunity WHERE Id = '{oid}' AND IsClosed = false LIMIT 1
+                    """)
+                    for r in opp_result.get("records", []):
+                        opps.append(_map_opp(r))
+
+    return {"opportunities": opps, "count": len(opps)}
+
+
+def tool_sf_create_quote(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    payload = {
+        "Name": args["name"],
+        "OpportunityId": args["opportunity_id"],
+        "Status": args.get("status", "Draft"),
+    }
+    for field, key in [
+        ("expiration_date", "ExpirationDate"),
+        ("pricebook_id", "Pricebook2Id"),
+        ("payment_terms", "PaymentTerms"),
+        ("description", "Description"),
+        ("billing_name", "BillingName"),
+        ("shipping_name", "ShippingName"),
+        ("shipping_terms", "ShippingTerms"),
+    ]:
+        if args.get(field):
+            payload[key] = args[field]
+    if args.get("shipping_handling") is not None:
+        payload["ShippingHandling"] = args["shipping_handling"]
+
+    result = sf_post(tokens, "sobjects/Quote", payload)
+    if not result.get("success"):
+        return {"error": "Failed to create quote", "errors": result.get("errors", [])}
+
+    quote_id = result["id"]
+    instance_url = tokens["instance_url"]
+    q_data = sf_query(tokens, f"SELECT QuoteNumber FROM Quote WHERE Id = '{quote_id}' LIMIT 1")
+    quote_number = (q_data.get("records") or [{}])[0].get("QuoteNumber")
+
+    return {
+        "success": True,
+        "quote_id": quote_id,
+        "quote_number": quote_number,
+        "quote_url": f"{instance_url}/lightning/r/Quote/{quote_id}/view",
+        "opportunity_url": f"{instance_url}/lightning/r/Opportunity/{args['opportunity_id']}/view",
+    }
+
+
+def tool_sf_get_pricebooks(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    soql = "SELECT Id, Name, IsActive, IsStandard FROM Pricebook2 WHERE IsActive = true ORDER BY IsStandard DESC, Name ASC LIMIT 20"
+    result = sf_query(tokens, soql)
+    pricebooks = [
+        {"id": r["Id"], "name": r["Name"], "is_standard": r.get("IsStandard", False)}
+        for r in result.get("records", [])
+    ]
+    return {"pricebooks": pricebooks, "count": len(pricebooks)}
+
+
+def tool_sf_get_pricebook_entries(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    pricebook_id = args["pricebook_id"]
+    limit = args.get("limit", 25)
+    name_filter = f"AND Product2.Name LIKE '%{args['product_name']}%'" if args.get("product_name") else ""
+    soql = f"""
+        SELECT Id, Product2Id, Product2.Name, Product2.Description,
+               Product2.ProductCode, UnitPrice, IsActive
+        FROM PricebookEntry
+        WHERE Pricebook2Id = '{pricebook_id}' AND IsActive = true
+        {name_filter}
+        ORDER BY Product2.Name ASC
+        LIMIT {limit}
+    """
+    result = sf_query(tokens, soql)
+    entries = []
+    for r in result.get("records", []):
+        p = r.get("Product2") or {}
+        entries.append({
+            "pricebook_entry_id": r["Id"],
+            "product_id": r.get("Product2Id"),
+            "product_name": p.get("Name"),
+            "product_code": p.get("ProductCode"),
+            "description": p.get("Description"),
+            "list_price": r.get("UnitPrice"),
+        })
+    return {"entries": entries, "count": len(entries)}
+
+
+def tool_sf_add_quote_line_item(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    payload = {
+        "QuoteId": args["quote_id"],
+        "PricebookEntryId": args["pricebook_entry_id"],
+        "Quantity": args["quantity"],
+    }
+    if args.get("unit_price") is not None:
+        payload["UnitPrice"] = args["unit_price"]
+    if args.get("description"):
+        payload["Description"] = args["description"]
+    if args.get("sort_order") is not None:
+        payload["SortOrder"] = args["sort_order"]
+
+    result = sf_post(tokens, "sobjects/QuoteLineItem", payload)
+    if not result.get("success"):
+        return {"error": "Failed to add line item", "errors": result.get("errors", [])}
+    return {"success": True, "line_item_id": result.get("id"), "quote_id": args["quote_id"]}
+
+
+def tool_sf_upload_file(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    file_path = args["file_path"]
+    if not os.path.isabs(file_path) and VAULT_PATH:
+        file_path = os.path.join(VAULT_PATH, file_path)
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    filename = os.path.basename(file_path)
+    title = args.get("title") or filename
+    linked_record_id = args["linked_record_id"]
+
+    with open(file_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    # FirstPublishLocationId auto-creates the ContentDocumentLink
+    cv_payload = {
+        "Title": title,
+        "PathOnClient": filename,
+        "VersionData": encoded,
+        "FirstPublishLocationId": linked_record_id,
+    }
+    result = sf_post(tokens, "sobjects/ContentVersion", cv_payload)
+    if not result.get("success"):
+        return {"error": "Failed to upload file", "errors": result.get("errors", [])}
+
+    cv_id = result["id"]
+    cv_data = sf_query(tokens, f"SELECT ContentDocumentId, ContentSize FROM ContentVersion WHERE Id = '{cv_id}' LIMIT 1")
+    rec = (cv_data.get("records") or [{}])[0]
+
+    return {
+        "success": True,
+        "content_version_id": cv_id,
+        "content_document_id": rec.get("ContentDocumentId"),
+        "title": title,
+        "filename": filename,
+        "size_bytes": rec.get("ContentSize"),
+        "linked_to": linked_record_id,
+    }
+
+
+def tool_sf_get_opportunity_contacts(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    opp_id = args["opportunity_id"]
+    soql = f"""
+        SELECT Contact.Id, Contact.Name, Contact.Email, Contact.Phone,
+               Contact.Title, Role, IsPrimary
+        FROM OpportunityContactRole
+        WHERE OpportunityId = '{opp_id}'
+    """
+    result = sf_query(tokens, soql)
+    contacts = []
+    for r in result.get("records", []):
+        c = r.get("Contact") or {}
+        contacts.append({
+            "contact_id": c.get("Id"),
+            "name": c.get("Name"),
+            "email": c.get("Email"),
+            "phone": c.get("Phone"),
+            "title": c.get("Title"),
+            "role": r.get("Role"),
+            "is_primary": r.get("IsPrimary"),
+        })
+    return {"contacts": contacts, "count": len(contacts)}
+
+
 TOOL_FNS = {
     "sf_authenticate": tool_sf_authenticate,
     "sf_get_pipeline": tool_sf_get_pipeline,
@@ -1335,6 +1678,13 @@ TOOL_FNS = {
     "sf_update_asset": tool_sf_update_asset,
     "sf_get_new_assets": tool_sf_get_new_assets,
     "sf_get_financed_deals": tool_sf_get_financed_deals,
+    "sf_search_opportunities": tool_sf_search_opportunities,
+    "sf_create_quote": tool_sf_create_quote,
+    "sf_get_pricebooks": tool_sf_get_pricebooks,
+    "sf_get_pricebook_entries": tool_sf_get_pricebook_entries,
+    "sf_add_quote_line_item": tool_sf_add_quote_line_item,
+    "sf_upload_file": tool_sf_upload_file,
+    "sf_get_opportunity_contacts": tool_sf_get_opportunity_contacts,
 }
 
 
