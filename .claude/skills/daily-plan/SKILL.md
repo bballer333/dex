@@ -594,15 +594,15 @@ integrations_used: [calendar, tasks, people, work-intelligence]
 
 ## ✅ Tasks
 
-**Do today** (picked from "This Week" tasks that align with today's focus):
-- [ ] {{Task directly tied to today's top 3 focus items}}
-- [ ] {{Task that can be batched in an afternoon call block}}
+### Do today
+{{Tasks directly tied to today's top 3 focus items, or that pair with today's call blocks}}
+- [ ] {{Task}}
 
-**Queue — this week** (remaining "This Week" tasks):
-{{List remaining "This Week" tasks not already in "Do today"}}
+### Queue — this week
+{{Remaining "This Week" tasks not already in "Do today"}}
 
-**Overdue 2026 — warm accounts** (max 5, most recent due dates first):
-{{List top 5 overdue 2026 tasks by due date descending}}
+### Overdue 2026 — warm accounts
+{{Top 5 overdue 2026 tasks as a table, most recent due date first}}
 
 *Full overdue list in Planning/Tasks.md*
 
