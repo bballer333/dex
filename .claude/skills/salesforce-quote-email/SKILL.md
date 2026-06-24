@@ -11,15 +11,16 @@ Turn inbound quote-request emails into Salesforce Quotes in a guided, review-bef
 
 ---
 
-## Step 0: Check Authentication + Sync
+## Step 0: Check Authentication
 
-Run both silently before saying anything to the user:
+Run silently before saying anything to the user:
 
-1. **Git pull** — run `git pull origin main --ff-only` (or the default branch) to pick up any emails PA committed since this session started. Ignore errors (offline, already up to date).
-2. **SF auth check** — if `sf_authenticate` tokens don't exist, prompt:
-   ```
-   Salesforce isn't connected yet. I'll open a browser window — log in and approve access, then come back here.
-   ```
+**SF auth check** — if `sf_authenticate` tokens don't exist, prompt:
+```
+Salesforce isn't connected yet. I'll open a browser window — log in and approve access, then come back here.
+```
+
+(No git sync needed — Power Automate writes files directly to OneDrive, which syncs to your local vault automatically.)
 
 ---
 
@@ -44,7 +45,7 @@ Show them and ask which to process:
 Which one? (number, "all" to process each in sequence, or "paste" to enter a different email manually)
 ```
 
-Wait for selection. Use that email's content for Step 2. After the quote is successfully created in Step 7, call `email_archive_pending` with the filename — it moves the file to `processed/` and commits the change back to git.
+Wait for selection. Use that email's content for Step 2. After the quote is successfully created in Step 7, call `email_archive_pending` with the filename — it moves the file locally from `pending/` to `processed/`, and OneDrive syncs the change automatically.
 
 ### If pending/ is empty or the folder doesn't exist:
 
@@ -398,13 +399,25 @@ If the email requests multiple machines:
 
 ## Power Automate Setup Guide
 
-**Goal:** When a quote-request email arrives in your Outlook inbox, PA automatically commits a text file to `Inbox/Emails/pending/` in your GitHub repo (`bballer333/dex`). When you run `/salesforce-quote-email`, the skill pulls that file and processes it — no copy-paste needed.
+**Goal:** When a quote-request email arrives in your Outlook inbox, PA automatically writes a text file to `Inbox/Emails/pending/` in your OneDrive. OneDrive syncs it to your local vault within seconds. When you run `/salesforce-quote-email`, the skill reads those files directly — no copy-paste needed.
 
 **One-time setup (~5–10 min):**
 
+### Before you start — confirm your OneDrive path
+
+Your vault is at `Documents\dex`. If OneDrive syncs your Documents folder (the default on Windows 11), then the OneDrive path PA needs is:
+
+```
+/Documents/dex/Inbox/Emails/pending
+```
+
+To verify: open OneDrive on your PC, browse to `Documents → dex → Inbox → Emails` and confirm it's there. If your vault isn't inside OneDrive at all, you'll need to move it or enable "Known Folder Move" for Documents in OneDrive settings first.
+
+---
+
 ### Step 1 — Create the flow
 
-1. Go to [make.powerautomate.com](https://make.powerautomate.com) and sign in
+1. Go to **make.powerautomate.com** and sign in with your work/Microsoft account
 2. Click **+ Create** → **Automated cloud flow**
 3. Name it: `Quote Email → Dex`
 4. Trigger: search for **"When a new email arrives (V3)"** → Outlook 365 → click **Create**
@@ -413,68 +426,73 @@ If the email requests multiple machines:
 
 In the trigger settings:
 - **Folder:** Inbox (or whichever folder quote emails land in)
-- **Include Attachments:** No (we only need the body text for now)
+- **Include Attachments:** No
 - **Only with Attachments:** No
 - Click **Show advanced options**
-  - **Subject Filter:** `quote` (or leave blank and filter later)
+  - **Subject Filter:** `quote` (or leave blank and filter in the Condition step)
   - **From:** leave blank to catch all, or enter customer domains separated by `;`
 
 ### Step 3 — Add a Condition (optional but recommended)
-
-Add a **Condition** step to only run when the email looks like a quote request:
 
 - Click **+ New step** → search **Condition**
 - Condition: `Subject` **contains** `quote` **OR** `Subject` **contains** `RFQ` **OR** `Subject` **contains** `pricing`
 - Put the next step inside the **Yes** branch
 
-### Step 4 — Add the GitHub action
+### Step 4 — (Optional) Convert HTML body to plain text
 
-Inside the Yes branch (or directly after the trigger if you skipped the condition):
+PA sends email bodies as HTML by default. Add this step before the OneDrive action so the saved file is readable:
 
-1. Click **+ Add an action** → search **GitHub** → select **"Create file"**
-2. Sign in to GitHub with your account when prompted
+- Click **+ Add an action** → search **"Html to text"** → select it
+- **Content:** click the lightning bolt → select **Body** from the trigger
+
+### Step 5 — Add the OneDrive action
+
+Inside the Yes branch (or directly after Step 4 if you skipped the Condition):
+
+1. Click **+ Add an action** → search **OneDrive for Business** → select **"Create file"**
+   - If your account uses personal OneDrive (not work), search **OneDrive** instead
+2. Sign in when prompted
 3. Fill in the action:
-   - **Repository Owner:** `bballer333`
-   - **Repository Name:** `dex`
-   - **Branch:** `main` (or whatever your default branch is)
-   - **File Path:** click in the field, type:
+   - **Folder Path:** click the folder icon and navigate to:
      ```
-     Inbox/Emails/pending/
+     Documents/dex/Inbox/Emails/pending
      ```
-     Then click the lightning bolt (dynamic content) and insert:
-     - `Received Time` formatted — click **Expression** tab and enter:
-       ```
-       formatDateTime(triggerOutputs()?['body/receivedDateTime'], 'yyyyMMdd-HHmmss')
-       ```
-     Then type `-quote.txt` after it. Full path example: `Inbox/Emails/pending/20260623-143022-quote.txt`
-   - **File Content:** click the field, then use **Expression** tab to build:
+     (If the folder doesn't exist yet, create it in File Explorer first — OneDrive will sync it)
+   - **File Name:** click the field, then open the **Expression** tab and enter:
+     ```
+     concat(formatDateTime(triggerOutputs()?['body/receivedDateTime'], 'yyyyMMdd-HHmmss'), '-quote.txt')
+     ```
+     This produces names like `20260623-143022-quote.txt` — always unique.
+   - **File Content:** click the field, then open the **Expression** tab and enter:
      ```
      concat(
        'From: ', triggerOutputs()?['body/from'], decodeUriComponent('%0A'),
        'Subject: ', triggerOutputs()?['body/subject'], decodeUriComponent('%0A'),
        'Date: ', triggerOutputs()?['body/receivedDateTime'], decodeUriComponent('%0A'),
        decodeUriComponent('%0A'),
-       triggerOutputs()?['body/body']
+       outputs('Html_to_text')?['body/text']
      )
      ```
-   - **Commit Message:** `PA: incoming quote email from @{triggerOutputs()?['body/from']}`
+     If you skipped the Html-to-text step, replace the last line with `triggerOutputs()?['body/body']`
 
-### Step 5 — Save and test
+### Step 6 — Save and test
 
 1. Click **Save**
-2. Forward yourself a sample quote email (or ask a colleague to send one)
-3. Watch the flow run in the **Run history** panel
-4. Then open a Claude Code session, run `/salesforce-quote-email`, and confirm it picks up the file
+2. Forward yourself a sample quote email (subject line containing "quote")
+3. Watch the flow run in the **Run history** panel — it should show a green checkmark
+4. Check that the file appeared in `Documents\dex\Inbox\Emails\pending\` on your PC
+5. Open a Claude Code session, run `/salesforce-quote-email`, and confirm it picks up the file
 
 ### Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| Flow didn't trigger | Check the folder filter — make sure the email landed in the folder you set |
-| GitHub action fails with 422 | The file path might already exist — add a timestamp to the filename to ensure uniqueness |
-| Body content is HTML | PA sends HTML by default; add a **"Html to text"** step before the GitHub action and use its output instead of `body/body` |
-| File shows up but body is blank | Some Outlook environments use `body/bodyPreview` — try that field instead |
+| Flow didn't trigger | Check the folder filter in the trigger — confirm the email landed in the folder you set |
+| OneDrive "Create file" fails with path error | Browse to the folder using the folder picker instead of typing the path manually |
+| File shows up but body is blank | Skip the Html-to-text step and use `body/bodyPreview` instead of `body/body` |
+| File never appears on local PC | OneDrive sync may be paused — check the OneDrive tray icon and resume sync |
+| Duplicate files created | The timestamp expression guarantees uniqueness — if you see duplicates, the flow ran twice (check the trigger settings) |
 
 ### After setup
 
-Every matching email automatically creates a file in `Inbox/Emails/pending/`. Run `/salesforce-quote-email` any time — it syncs with GitHub first, shows you what's waiting, and processes your choice end-to-end.
+Every matching email automatically drops a file into `Inbox/Emails/pending/` on your local machine within seconds of arriving. Run `/salesforce-quote-email` any time — it reads whatever is waiting, shows you the list, and processes your selection end-to-end.
