@@ -43,9 +43,9 @@ All formatting, theme fills, and column widths are copied from this file. Never 
 
 ### 1a. Salesforce Pipeline
 ```
-sf_get_pipeline(limit=200)
+get_opportunities(limit=200)  // salesforce-remote MCP
 ```
-Save the full result. Key fields per opportunity: `account`, `name`, `stage`, `amount`, `vendor`.
+Save the full result. Key fields per opportunity: `Account.Name`, `Name`, `StageName`, `Amount`.
 
 ### 1b. Open Tasks
 ```
@@ -101,7 +101,7 @@ Present the suggested territory map to the user and confirm before building.
 
 For each territory, find matching accounts from the SF pipeline by:
 1. Searching account names for known city/area keywords
-2. Using `sf_get_account(name=...)` to get contacts and phone numbers for top accounts
+2. Using `search_accounts(query=...)` + `get_account_contacts(account_id=...)` (salesforce-remote MCP) to get contacts and phone numbers for top accounts
 
 Target **6–8 accounts per day**. Prioritize:
 - High-amount opportunities in Negotiation or Favorable stage
@@ -221,8 +221,8 @@ Confirm with user:
 
 | Data | MCP | Tool |
 |------|-----|------|
-| Pipeline | salesforce | `sf_get_pipeline` |
-| Account contacts | salesforce | `sf_get_account` |
+| Pipeline | salesforce-remote | `get_opportunities` |
+| Account contacts | salesforce-remote | `search_accounts`, `get_account_contacts` |
 | Open tasks | work-mcp | `list_tasks` |
 | Calendar | calendar-mcp | `calendar_get_events` |
 | Email follow-ups | retool-email | `get_recent_emails`, `search_emails` |

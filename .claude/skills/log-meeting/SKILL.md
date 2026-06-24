@@ -43,11 +43,11 @@ Extract from the raw input:
 
 ## Step 2: Match Salesforce Opportunity
 
-Call `sf_get_account` with the account name from $ACCOUNT.
+Call `search_accounts` (salesforce-remote MCP) with the account name from $ACCOUNT.
 
 If an account is found:
 - Note the Account Id (`what_id` for task logging)
-- Call `sf_get_opportunity` or `sf_get_pipeline` to find open opportunities under that account
+- Call `get_opportunities` (salesforce-remote MCP) with `account_name` filter to find open opportunities
 - If exactly one open opp: use it automatically, note the name
 - If multiple open opps: list them and ask which one to log against
 - If no open opps: log against the Account directly (still valuable)
@@ -59,16 +59,13 @@ If no account is found:
 
 ## Step 3: Log Activity to Salesforce
 
-Call `sf_create_task` with:
+Call `log_activity` (salesforce-remote MCP) with:
 
 ```
+what_id: [Opportunity Id if found, else Account Id]
 subject: "Meeting - [Account Name] - [YYYY-MM-DD]"
 description: [structured summary — see format below]
-activity_date: [meeting date from Step 1]
-what_id: [Opportunity Id if found, else Account Id]
-who_id: [Contact Id if a specific contact was matched]
-status: "Completed"
-priority: "Normal"
+type: "Meeting"
 ```
 
 **Description format for Salesforce:**
@@ -183,7 +180,7 @@ If Salesforce logging failed, show the error and offer to retry or log manually.
 
 ## Error Handling
 
-- **SF auth expired**: Prompt "Salesforce needs re-auth — run `sf_authenticate` and then retry"
+- **SF error**: Show the error message and offer to retry or log manually
 - **No match in SF**: Still save the Dex note; offer to log to SF manually later
 - **Empty notes**: Ask again — don't process an empty input
 - **No action items found**: Confirm with user: "I didn't spot any action items — anything to add before I wrap up?"

@@ -7,10 +7,10 @@ Pulls your open Salesforce pipeline and creates/updates project pages in `Projec
 
 ## What This Does
 
-1. Fetches open opportunities from Salesforce (`sf_get_pipeline`)
+1. Fetches open opportunities from Salesforce (`get_opportunities` via salesforce-remote MCP)
 2. For each opportunity, creates or updates a project page in `Projects/`
-3. Pulls quotes and their attached documents (`sf_get_quotes`)
-4. Downloads quote PDFs into each opportunity's `Quotes/` subfolder (`sf_download_quote_file`)
+3. Pulls quotes and their attached documents (`sf_get_quotes` via local salesforce MCP)
+4. Downloads quote PDFs into each opportunity's `Quotes/` subfolder (`sf_download_quote_file` via local salesforce MCP)
 5. Links Salesforce contacts to People pages in `People/`
 6. Flags closed/won/lost opps for archival to `Archive/Projects/`
 
@@ -27,16 +27,14 @@ $FLAGS: Optional. `--no-download` to skip quote file downloads.
 
 ## Prerequisites
 
-- Salesforce MCP must be authenticated (`sf_authenticate`)
-- `SF_OWNER_ID` env var should be set to scope to your pipeline
+- salesforce-remote MCP must be available (Cloudflare Worker — no auth action needed)
+- Local salesforce MCP needed only for quote file downloads
 
 ## Process
 
 ### Step 1: Fetch Pipeline
 
-Call `sf_get_pipeline` from the Salesforce MCP. If $FILTER is provided, pass it as the `stage` or use it to filter results by opportunity name.
-
-If not authenticated, tell the user to run `sf_authenticate` first.
+Call `get_opportunities` from the salesforce-remote MCP. If $FILTER is provided, pass it as `account_name` or filter results by opportunity name after fetching.
 
 ### Step 2: Diff Against Existing Projects
 
@@ -52,10 +50,11 @@ Categorize each opp:
 
 For each new or updated opportunity:
 
-1. Call `sf_get_opportunity` to get full details (contacts, quotes, activity)
-2. Create the project folder: `Projects/{Account_Name} - {Opportunity_Name} - {Vendor__c}/`
-3. Write the project page using the template below
-4. For each contact with an OpportunityContactRole:
+1. Call `get_account_details` (salesforce-remote MCP) with the account_id to get full account info and recent activity
+2. Call `get_account_contacts` (salesforce-remote MCP) to get contacts for the account
+3. Create the project folder: `Projects/{Account_Name} - {Opportunity_Name} - {Vendor__c}/`
+4. Write the project page using the template below
+5. For each contact found:
    - Check if a People page exists in `People/External/`
    - If not, create a stub page with name, title, email, company
    - Wiki-link the contact in the project page
@@ -67,11 +66,11 @@ Unless `--no-download` is set:
 **Only download quote files for opportunities in these stages:** Favorable, Negotiation, Buying.
 For all other stages (Discovery, Quoting, Active Project, etc.), sync quote metadata (number, status, total) into the project page but skip the actual file download.
 
-1. Call `sf_get_quotes` for each opportunity
+1. Call `sf_get_quotes` (local salesforce MCP) for each opportunity
 2. For each quote with attached documents:
    - If opp stage is Favorable, Negotiation, or Buying:
      - Create `Projects/{folder}/Quotes/` if needed
-     - Call `sf_download_quote_file` with the `content_version_id`
+     - Call `sf_download_quote_file` (local salesforce MCP) with the `content_version_id`
      - Save as `{QuoteNumber}_{Title}.{FileType}` (e.g., `Q-00123_Proposal.pdf`)
      - Link the file in the project page's Quotes section
    - Otherwise: record quote metadata in the project page but do not download files
