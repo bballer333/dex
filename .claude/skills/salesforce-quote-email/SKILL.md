@@ -438,16 +438,9 @@ In the trigger settings:
 - Condition: `Subject` **contains** `quote` **OR** `Subject` **contains** `RFQ` **OR** `Subject` **contains** `pricing`
 - Put the next step inside the **Yes** branch
 
-### Step 4 — (Optional) Convert HTML body to plain text
+### Step 4 — Add the OneDrive action
 
-PA sends email bodies as HTML by default. Add this step before the OneDrive action so the saved file is readable:
-
-- Click **+ Add an action** → search **"Html to text"** → select it
-- **Content:** click the lightning bolt → select **Body** from the trigger
-
-### Step 5 — Add the OneDrive action
-
-Inside the Yes branch (or directly after Step 4 if you skipped the Condition):
+Inside the Yes branch (or directly after the trigger if you skipped the Condition):
 
 1. Click **+ Add an action** → search **OneDrive for Business** → select **"Create file"**
    - If your account uses personal OneDrive (not work), search **OneDrive** instead
@@ -470,10 +463,10 @@ Inside the Yes branch (or directly after Step 4 if you skipped the Condition):
        'Subject: ', triggerOutputs()?['body/subject'], decodeUriComponent('%0A'),
        'Date: ', triggerOutputs()?['body/receivedDateTime'], decodeUriComponent('%0A'),
        decodeUriComponent('%0A'),
-       outputs('Html_to_text')?['body/text']
+       triggerOutputs()?['body/body']
      )
      ```
-     If you skipped the Html-to-text step, replace the last line with `triggerOutputs()?['body/body']`
+     PA saves the raw email body here (which may be HTML). The Dex MCP server automatically strips HTML tags when it reads the file, so you'll always get clean plain text in the quote workflow.
 
 ### Step 6 — Save and test
 
@@ -489,7 +482,8 @@ Inside the Yes branch (or directly after Step 4 if you skipped the Condition):
 |---|---|
 | Flow didn't trigger | Check the folder filter in the trigger — confirm the email landed in the folder you set |
 | OneDrive "Create file" fails with path error | Browse to the folder using the folder picker instead of typing the path manually |
-| File shows up but body is blank | Skip the Html-to-text step and use `body/bodyPreview` instead of `body/body` |
+| File shows up but body is blank | Try `body/bodyPreview` instead of `body/body` in the File Content expression |
+| Body shows HTML tags in the skill output | The server strips HTML automatically — verify the saved file has a `.txt` extension so the right parser runs |
 | File never appears on local PC | OneDrive sync may be paused — check the OneDrive tray icon and resume sync |
 | Duplicate files created | The timestamp expression guarantees uniqueness — if you see duplicates, the flow ran twice (check the trigger settings) |
 

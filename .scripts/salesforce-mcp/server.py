@@ -1857,8 +1857,41 @@ def _parse_eml(file_path):
     }
 
 
+def _strip_html(text):
+    """Strip HTML tags and decode common entities from an HTML email body."""
+    from html.parser import HTMLParser
+
+    class _Stripper(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._parts = []
+            self._skip = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"):
+                self._skip = True
+            elif tag in ("br", "p", "div", "tr", "li"):
+                self._parts.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style"):
+                self._skip = False
+
+        def handle_data(self, data):
+            if not self._skip:
+                self._parts.append(data)
+
+    s = _Stripper()
+    s.feed(text)
+    result = "".join(s._parts)
+    # Collapse runs of blank lines to at most two
+    import re
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
 def _parse_txt(file_path):
-    """Parse a plain-text email file. Tries to extract From/Subject/Date headers if present."""
+    """Parse a plain-text (or HTML) email file saved by Power Automate."""
     with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
     from_ = subject = date_ = ""
@@ -1879,11 +1912,15 @@ def _parse_txt(file_path):
                 body_lines.append(line)
         else:
             body_lines.append(line)
+    body = "\n".join(body_lines)
+    # PA may write the raw HTML body when the Html-to-text connector is unavailable.
+    if "<html" in body.lower() or "<!doctype" in body.lower():
+        body = _strip_html(body)
     return {
         "from": from_,
         "subject": subject,
         "date": date_,
-        "body": "\n".join(body_lines),
+        "body": body,
         "attachments": [],
     }
 
