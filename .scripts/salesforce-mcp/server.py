@@ -444,21 +444,6 @@ TOOLS = [
         },
     },
     {
-        "name": "sf_create_quote",
-        "description": "Create a new Quote in Salesforce linked to an opportunity. Pre-fills vendor and machine model from the opportunity when available. Returns the new Quote Id and QuoteNumber.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "opportunity_id": {"type": "string", "description": "Salesforce Opportunity Id to link the quote to"},
-                "name": {"type": "string", "description": "Quote name. Defaults to the opportunity name if not provided."},
-                "expiration_date": {"type": "string", "description": "Quote expiration date in YYYY-MM-DD format. Defaults to 30 days from today."},
-                "description": {"type": "string", "description": "Quote description or notes (optional)"},
-                "status": {"type": "string", "description": "Quote status (e.g. 'Draft', 'In Review', 'Approved'). Defaults to 'Draft'."},
-            },
-            "required": ["opportunity_id"],
-        },
-    },
-    {
         "name": "sf_get_vendors",
         "description": "Get all Vendor accounts from Salesforce (Record Type = Vendor). Use to present a vendor picklist when creating opportunities. Returns Id and Name for each vendor.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1363,43 +1348,6 @@ def tool_sf_get_financed_deals(args):
     }
 
 
-def tool_sf_create_quote(args):
-    tokens = get_valid_tokens()
-    if not tokens:
-        return {"error": "Not authenticated. Run sf_authenticate first."}
-    opp_id = args["opportunity_id"]
-    # Fetch opportunity name to use as default quote name
-    opp_records = sf_query(tokens, f"SELECT Name FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1").get("records", [])
-    if not opp_records:
-        return {"error": f"Opportunity not found for id '{opp_id}'."}
-    opp_name = opp_records[0]["Name"]
-    default_expiry = (date.today() + timedelta(days=30)).isoformat()
-    payload = {
-        "OpportunityId": opp_id,
-        "Name": args.get("name") or opp_name,
-        "Status": args.get("status", "Draft"),
-        "ExpirationDate": args.get("expiration_date", default_expiry),
-    }
-    if args.get("description"):
-        payload["Description"] = args["description"]
-    result = sf_post(tokens, "sobjects/Quote", payload)
-    quote_id = result.get("id")
-    if not quote_id:
-        return {"success": False, "errors": result.get("errors", []), "raw": result}
-    # Fetch the assigned QuoteNumber
-    quote_records = sf_query(tokens, f"SELECT QuoteNumber FROM Quote WHERE Id = '{quote_id}' LIMIT 1").get("records", [])
-    quote_number = quote_records[0].get("QuoteNumber") if quote_records else None
-    return {
-        "success": True,
-        "quote_id": quote_id,
-        "quote_number": quote_number,
-        "quote_name": payload["Name"],
-        "opportunity_id": opp_id,
-        "expiration_date": payload["ExpirationDate"],
-        "status": payload["Status"],
-    }
-
-
 def tool_sf_get_vendors(args):
     tokens = get_valid_tokens()
     if not tokens:
@@ -1545,7 +1493,6 @@ TOOL_FNS = {
     "sf_update_asset": tool_sf_update_asset,
     "sf_get_new_assets": tool_sf_get_new_assets,
     "sf_get_financed_deals": tool_sf_get_financed_deals,
-    "sf_create_quote": tool_sf_create_quote,
     "sf_get_vendors": tool_sf_get_vendors,
     "sf_create_opportunity": tool_sf_create_opportunity,
 }
