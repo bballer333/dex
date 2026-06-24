@@ -425,18 +425,22 @@ To verify: open OneDrive on your PC, browse to `Documents → dex → Inbox → 
 ### Step 2 — Configure the trigger
 
 In the trigger settings:
-- **Folder:** Inbox (or whichever folder quote emails land in)
+- **Folder:** Inbox (or whichever folder vendor replies land in)
 - **Include Attachments:** No
 - **Only with Attachments:** No
 - Click **Show advanced options**
-  - **Subject Filter:** `quote` (or leave blank and filter in the Condition step)
-  - **From:** leave blank to catch all, or enter customer domains separated by `;`
+  - **Subject Filter:** `RFQ` — PA will only fire when the email subject contains "RFQ". Vendor replies preserve the original subject (e.g. "RE: RFQ — TruBend 5085"), so this catches both originals and replies.
+  - **From:** leave blank to catch all vendors, or enter specific vendor domains separated by `;`
 
 ### Step 3 — Add a Condition (optional but recommended)
 
+Narrow it to replies only so the flow doesn't run when you *send* an RFQ:
+
 - Click **+ New step** → search **Condition**
-- Condition: `Subject` **contains** `quote` **OR** `Subject` **contains** `RFQ` **OR** `Subject` **contains** `pricing`
+- Condition: `Subject` **contains** `RFQ` **AND** `Subject` **contains** `RE:`
 - Put the next step inside the **Yes** branch
+
+If you want to also catch forwarded replies (`FW:`), add a second OR branch: `Subject` **contains** `RFQ` **AND** `Subject` **contains** `FW:`
 
 ### Step 4 — Add the OneDrive action
 
