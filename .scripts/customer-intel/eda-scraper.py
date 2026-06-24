@@ -234,7 +234,18 @@ KNOWN_SAVED_QUERIES = [
 
 # ── Download ───────────────────────────────────────────────────────────────────
 
-def _download_one(page, query_name):
+def _screenshot(page, label):
+    """Save a debug screenshot to ~/.claude/eda_debug_<label>.png."""
+    try:
+        safe = re.sub(r"[^\w]", "_", label)[:40]
+        path = Path.home() / ".claude" / f"eda_debug_{safe}.png"
+        page.screenshot(path=str(path))
+        print(f"  [screenshot] {path}", file=sys.stderr)
+    except Exception:
+        pass
+
+
+def _download_one(page, query_name, debug=False):
     """Run one saved query export using an already-open, authenticated Playwright page."""
     from playwright.sync_api import TimeoutError as PWTimeout
 
@@ -248,69 +259,104 @@ def _download_one(page, query_name):
     page.wait_for_load_state("domcontentloaded", timeout=15000)
     time.sleep(1)
 
-    # Click the saved query link by name
+    # ── Step 1: Click the saved query link by its text ────────────────────────
     found = False
-    for a in page.query_selector_all("a"):
-        if query_name.lower() in (a.inner_text() or "").lower():
-            a.click()
+    # Try <a> tags first, then buttons/inputs with matching text
+    for el in page.query_selector_all("a, button, input[type='button'], input[type='submit']"):
+        text = (el.inner_text() if el.evaluate("e => e.tagName !== 'INPUT'") else
+                el.get_attribute("value") or "")
+        if query_name.lower() in (text or "").lower():
+            el.click()
             found = True
             break
 
     if not found:
+        if debug:
+            # Log all visible link/button text to help diagnose selector mismatches
+            links = [(el.inner_text() or "").strip() for el in page.query_selector_all("a")]
+            print(f"  [debug] Links on /Query: {[l for l in links if l][:20]}", file=sys.stderr)
+            _screenshot(page, f"no_link_{re.sub(r'[^\\w]','_',query_name)[:20]}")
         print(f"  WARNING: '{query_name}' not found on /Query page.", file=sys.stderr)
         return []
 
-    # Wait for results summary page, give JS time to render
+    # ── Step 2: Wait for results page ────────────────────────────────────────
     try:
-        page.wait_for_selector("[class*='gear']", timeout=20000)
+        page.wait_for_load_state("domcontentloaded", timeout=20000)
     except PWTimeout:
         pass
     time.sleep(1.5)
 
-    # Gear icon → export action panel
-    page.evaluate("""() => {
+    if debug:
+        _screenshot(page, f"results_{re.sub(r'[^\\w]','_',query_name)[:20]}")
+
+    # ── Step 3: Gear icon → opens action/export panel ─────────────────────────
+    clicked_gear = page.evaluate("""() => {
         const byId = document.getElementById('gear-button');
-        if (byId) { byId.click(); return; }
-        const els = document.querySelectorAll('[class*="gear"]');
-        if (els[0]) els[0].click();
+        if (byId) { byId.click(); return 'id:gear-button'; }
+        const byCls = document.querySelector('[class*="gear"],[id*="gear"]');
+        if (byCls) { byCls.click(); return byCls.id || byCls.className; }
+        return null;
     }""")
+    if debug:
+        print(f"  [debug] gear click: {clicked_gear}", file=sys.stderr)
     time.sleep(1)
 
-    # Export accordion → reveals Go button
-    page.evaluate("""() => {
-        const el = document.getElementById('export-accordion-section');
-        if (el) { el.click(); return; }
-        for (const a of document.querySelectorAll('a')) {
-            if (a.innerText?.trim() === 'Export' && a.offsetParent) { a.click(); return; }
+    # ── Step 4: Export accordion / section ────────────────────────────────────
+    clicked_export = page.evaluate("""() => {
+        const byId = document.getElementById('export-accordion-section');
+        if (byId) { byId.click(); return 'id:export-accordion-section'; }
+        // Any visible link/button whose text is exactly "Export"
+        for (const el of document.querySelectorAll('a,button')) {
+            if ((el.innerText || '').trim().toLowerCase() === 'export' && el.offsetParent) {
+                el.click(); return el.outerHTML.slice(0,80);
+            }
         }
+        // Broader: anything containing "export"
+        for (const el of document.querySelectorAll('a,button,span,div')) {
+            if ((el.innerText || '').trim().toLowerCase().includes('export') && el.offsetParent) {
+                el.click(); return el.outerHTML.slice(0,80);
+            }
+        }
+        return null;
     }""")
+    if debug:
+        print(f"  [debug] export click: {clicked_export}", file=sys.stderr)
     time.sleep(0.8)
 
-    # Go button → triggers file download
+    # ── Step 5: Go / download button → triggers file download ─────────────────
     rows = []
     try:
         with page.expect_download(timeout=30000) as dl_info:
-            page.evaluate("""() => {
-                const btn = document.getElementById('export-button');
-                if (btn) { btn.click(); return; }
-                for (const b of document.querySelectorAll('button')) {
-                    if ((b.innerText || '').toLowerCase().includes('go') && b.offsetParent) {
-                        b.click(); return;
+            clicked_go = page.evaluate("""() => {
+                const byId = document.getElementById('export-button');
+                if (byId) { byId.click(); return 'id:export-button'; }
+                for (const b of document.querySelectorAll('button,input[type="submit"],input[type="button"],a')) {
+                    const t = (b.innerText || b.value || '').toLowerCase();
+                    if ((t.includes('go') || t.includes('download') || t.includes('export')) && b.offsetParent) {
+                        b.click(); return b.outerHTML.slice(0,80);
                     }
                 }
+                return null;
             }""")
+            if debug:
+                print(f"  [debug] go/download click: {clicked_go}", file=sys.stderr)
+
         download = dl_info.value
         fname = download.suggested_filename or "eda_export"
         suffix = Path(fname).suffix or ".xlsx"
         tmp = Path.home() / ".claude" / f"eda_export_{int(time.time())}{suffix}"
         download.save_as(str(tmp))
+        print(f"  Downloaded: {fname} ({suffix})", file=sys.stderr)
         rows = _parse_excel_or_csv(tmp)
         try:
             tmp.unlink(missing_ok=True)
         except Exception:
             pass
+
     except Exception as e:
         print(f"  ERROR downloading '{query_name}': {e}", file=sys.stderr)
+        if debug:
+            _screenshot(page, f"error_{re.sub(r'[^\\w]','_',query_name)[:20]}")
 
     return rows
 
@@ -653,11 +699,17 @@ def build_asset_payload(eda_rec, account_id, our_brands):
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
-def cmd_download(session, query_filter=None, headed=False):
+def cmd_download(session, query_filter=None, headed=False, debug=False):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         print("ERROR: playwright not installed. Run: pip install playwright && python -m playwright install chromium")
+        sys.exit(1)
+
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        print("ERROR: openpyxl not installed (needed to parse Excel exports). Run: pip install openpyxl")
         sys.exit(1)
 
     queries = KNOWN_SAVED_QUERIES
@@ -668,6 +720,8 @@ def cmd_download(session, query_filter=None, headed=False):
             return
 
     print(f"Downloading {len(queries)} saved quer{'y' if len(queries)==1 else 'ies'}...", file=sys.stderr)
+    if debug:
+        print(f"  [debug] Screenshots saved to {Path.home() / '.claude'}/eda_debug_*.png", file=sys.stderr)
 
     cache = load_cache()
     cache.setdefault("queries", {})
@@ -686,9 +740,12 @@ def cmd_download(session, query_filter=None, headed=False):
             browser.close()
             return
 
+        if debug:
+            _screenshot(page, "query_page_initial")
+
         for q in queries:
             try:
-                rows = _download_one(page, q)
+                rows = _download_one(page, q, debug=debug)
             except Exception as e:
                 print(f"  ERROR on '{q}': {e}", file=sys.stderr)
                 rows = []
@@ -1284,6 +1341,7 @@ def main():
     parser.add_argument("--cache-info",     action="store_true", help="Show cache stats")
     parser.add_argument("--no-login-cache", action="store_true", help="Force fresh browser login")
     parser.add_argument("--headed",         action="store_true", help="Show browser window")
+    parser.add_argument("--debug",          action="store_true", help="Verbose output + screenshots at each download step")
     args = parser.parse_args()
 
     if args.list_queries:
@@ -1314,7 +1372,7 @@ def main():
             sys.exit(1)
 
     if args.download:
-        cmd_download(session, query_filter=args.query or None, headed=args.headed)
+        cmd_download(session, query_filter=args.query or None, headed=args.headed, debug=args.debug)
     else:
         parser.print_help()
 
