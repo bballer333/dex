@@ -291,7 +291,64 @@ export default {
       return json({ status: "ok", server: "salesforce-mcp", version: "1.0.0" });
     }
 
-    // All other routes require Bearer auth
+    // ── OAuth 2.0 endpoints (no auth required — needed for claude.ai web/mobile) ──
+
+    if (url.pathname === "/.well-known/oauth-authorization-server") {
+      return json({
+        issuer: `https://${url.hostname}`,
+        authorization_endpoint: `https://${url.hostname}/oauth/authorize`,
+        token_endpoint: `https://${url.hostname}/oauth/token`,
+        registration_endpoint: `https://${url.hostname}/oauth/register`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256"]
+      });
+    }
+
+    if (url.pathname === "/oauth/register" && request.method === "POST") {
+      const ct   = request.headers.get("Content-Type") || "";
+      const body = ct.includes("application/json")
+        ? await request.json()
+        : Object.fromEntries(new URLSearchParams(await request.text()));
+      return json({
+        client_id:                  "mcp-client",
+        client_secret:              env.MCP_SECRET,
+        redirect_uris:              body.redirect_uris || [],
+        grant_types:                ["authorization_code"],
+        response_types:             ["code"],
+        token_endpoint_auth_method: "client_secret_post"
+      }, 201);
+    }
+
+    if (url.pathname === "/oauth/authorize" && request.method === "GET") {
+      const redirectUri = url.searchParams.get("redirect_uri");
+      const state       = url.searchParams.get("state");
+      if (!redirectUri) return json({ error: "missing redirect_uri" }, 400);
+      const dest = new URL(redirectUri);
+      dest.searchParams.set("code", env.MCP_SECRET);
+      if (state) dest.searchParams.set("state", state);
+      return Response.redirect(dest.toString(), 302);
+    }
+
+    if (url.pathname === "/oauth/token" && request.method === "POST") {
+      const ct   = request.headers.get("Content-Type") || "";
+      const body = ct.includes("application/json")
+        ? await request.json()
+        : Object.fromEntries(new URLSearchParams(await request.text()));
+      if (body.grant_type !== "authorization_code") {
+        return json({ error: "unsupported_grant_type" }, 400);
+      }
+      if (!env.MCP_SECRET || body.code !== env.MCP_SECRET) {
+        return json({ error: "invalid_grant" }, 400);
+      }
+      return json({
+        access_token: env.MCP_SECRET,
+        token_type:   "Bearer",
+        expires_in:   31536000   // 1 year
+      });
+    }
+
+    // ── All other routes require Bearer auth ──
     const auth = request.headers.get("Authorization") || "";
     if (!env.MCP_SECRET || auth !== `Bearer ${env.MCP_SECRET}`) {
       return json({ error: "Unauthorized" }, 401);
