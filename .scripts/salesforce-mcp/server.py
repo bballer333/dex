@@ -451,7 +451,7 @@ TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "Opportunity name (e.g. 'McGregor Industries - HEM Saw VT120')"},
                 "account_id": {"type": "string", "description": "Salesforce Account Id (18-char) to link the opportunity to"},
-                "stage": {"type": "string", "description": "Stage name (e.g. 'Prospecting', 'Qualification', 'Proposal/Price Quote'). Defaults to 'Prospecting'"},
+                "stage": {"type": "string", "description": "Stage name (e.g. 'Discovery', 'Qualification', 'Proposal/Price Quote'). Defaults to 'Discovery'"},
                 "close_date": {"type": "string", "description": "Expected close date in YYYY-MM-DD format. Defaults to 90 days from today"},
                 "amount": {"type": "number", "description": "Opportunity amount (optional)"},
                 "contact_id": {"type": "string", "description": "Salesforce Contact Id to link as primary contact role (optional)"},
@@ -1340,7 +1340,7 @@ def tool_sf_create_opportunity(args):
     payload = {
         "Name": args["name"],
         "AccountId": args["account_id"],
-        "StageName": args.get("stage", "Prospecting"),
+        "StageName": args.get("stage", "Discovery"),
         "CloseDate": args.get("close_date", default_close),
     }
     if args.get("amount") is not None:
