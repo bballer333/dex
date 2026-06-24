@@ -18,6 +18,30 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 VAULT_PATH = os.environ.get("VAULT_PATH", "")
+EMAIL_QUEUE_PATH = os.environ.get("EMAIL_QUEUE_PATH", "")  # overrides vault-based path for email queue
+
+# Fall back to reading env values from the mcpjson config file when env vars aren't set
+# (Claude Code's mcpjsonServers loader doesn't always pass the env block to the subprocess)
+def _load_mcp_config_env():
+    global VAULT_PATH, EMAIL_QUEUE_PATH
+    server_dir = Path(__file__).resolve().parent  # .scripts/salesforce-mcp/
+    config_path = server_dir.parent.parent / ".claude" / "mcp" / "salesforce.json"
+    if not config_path.exists():
+        return
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        env = cfg.get("server", {}).get("env", {})
+        if not VAULT_PATH:
+            VAULT_PATH = env.get("VAULT_PATH", "")
+        if not EMAIL_QUEUE_PATH:
+            raw = env.get("EMAIL_QUEUE_PATH", "")
+            # skip unexpanded template variables
+            if raw and not raw.startswith("${"):
+                EMAIL_QUEUE_PATH = raw
+    except Exception:
+        pass
+
+_load_mcp_config_env()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -325,8 +349,10 @@ TOOLS = [
                 "description": {"type": "string", "description": "Full task description or meeting notes"},
                 "activity_date": {"type": "string", "description": "Date of the activity in YYYY-MM-DD format (defaults to today)"},
                 "status": {"type": "string", "description": "Task status: Completed (default), In Progress, Not Started"},
-                "what_id": {"type": "string", "description": "Salesforce Opportunity or Account Id to link this task to (WhatId)"},
-                "who_id": {"type": "string", "description": "Salesforce Contact Id to link this task to (WhoId)"},
+                "what_id": {"type": "string", "description": "Salesforce Opportunity or Account Id to link this task to (WhatId). Alias: opportunity_id"},
+                "opportunity_id": {"type": "string", "description": "Alias for what_id — Salesforce Opportunity Id to link this task to"},
+                "who_id": {"type": "string", "description": "Salesforce Contact Id to link this task to (WhoId). Alias: contact_id"},
+                "contact_id": {"type": "string", "description": "Alias for who_id — Salesforce Contact Id to link this task to"},
                 "type": {"type": "string", "description": "Activity type: Call, Email, Meeting, Note (optional)"},
             },
             "required": ["subject"],
@@ -923,10 +949,10 @@ def tool_sf_create_task(args):
     }
     if args.get("description"):
         payload["Description"] = args["description"]
-    if args.get("what_id"):
-        payload["WhatId"] = args["what_id"]
-    if args.get("who_id"):
-        payload["WhoId"] = args["who_id"]
+    if args.get("what_id") or args.get("opportunity_id"):
+        payload["WhatId"] = args.get("what_id") or args.get("opportunity_id")
+    if args.get("who_id") or args.get("contact_id"):
+        payload["WhoId"] = args.get("who_id") or args.get("contact_id")
     if args.get("type"):
         payload["Type"] = args["type"]
     if OWNER_ID:
@@ -1925,9 +1951,31 @@ def _parse_txt(file_path):
     }
 
 
+def _get_email_queue_path():
+    """Return EMAIL_QUEUE_PATH, falling back to salesforce.json config if env var not set."""
+    if EMAIL_QUEUE_PATH:
+        return EMAIL_QUEUE_PATH
+    # Re-read config file in case the module-level load ran before env was available
+    try:
+        config_path = Path(__file__).resolve().parent.parent.parent / ".claude" / "mcp" / "salesforce.json"
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        val = cfg.get("server", {}).get("env", {}).get("EMAIL_QUEUE_PATH", "")
+        if val and not val.startswith("${"):
+            return val
+    except Exception:
+        pass
+    return ""
+
+
 def tool_email_read_pending(args):
     limit = min(args.get("limit", 5), 20)
-    pending_dir = os.path.join(VAULT_PATH, "Inbox", "Emails", "pending") if VAULT_PATH else None
+    queue_path = _get_email_queue_path()
+    if queue_path:
+        pending_dir = os.path.join(queue_path, "pending")
+    elif VAULT_PATH:
+        pending_dir = os.path.join(VAULT_PATH, "Inbox", "Emails", "pending")
+    else:
+        pending_dir = None
     if not pending_dir or not os.path.isdir(pending_dir):
         return {
             "emails": [],
@@ -1966,10 +2014,15 @@ def tool_email_read_pending(args):
 
 def tool_email_archive_pending(args):
     filename = args["filename"]
-    if not VAULT_PATH:
-        return {"error": "VAULT_PATH not set."}
-    pending_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "pending"
-    processed_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "processed"
+    queue_path = _get_email_queue_path()
+    if queue_path:
+        pending_dir = Path(queue_path) / "pending"
+        processed_dir = Path(queue_path) / "processed"
+    elif VAULT_PATH:
+        pending_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "pending"
+        processed_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "processed"
+    else:
+        return {"error": "Neither EMAIL_QUEUE_PATH nor VAULT_PATH is set."}
     processed_dir.mkdir(parents=True, exist_ok=True)
     src = pending_dir / filename
     if not src.exists():
