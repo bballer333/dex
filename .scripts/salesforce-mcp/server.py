@@ -2,6 +2,7 @@
 """Salesforce MCP server for Dex — contacts, opportunities, accounts, activities."""
 
 import base64
+import email as email_lib
 import hashlib
 import json
 import os
@@ -10,12 +11,37 @@ import sys
 import threading
 import webbrowser
 from datetime import datetime, date, timedelta
+from email.header import decode_header as email_decode_header
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 VAULT_PATH = os.environ.get("VAULT_PATH", "")
+EMAIL_QUEUE_PATH = os.environ.get("EMAIL_QUEUE_PATH", "")  # overrides vault-based path for email queue
+
+# Fall back to reading env values from the mcpjson config file when env vars aren't set
+# (Claude Code's mcpjsonServers loader doesn't always pass the env block to the subprocess)
+def _load_mcp_config_env():
+    global VAULT_PATH, EMAIL_QUEUE_PATH
+    server_dir = Path(__file__).resolve().parent  # .scripts/salesforce-mcp/
+    config_path = server_dir.parent.parent / ".claude" / "mcp" / "salesforce.json"
+    if not config_path.exists():
+        return
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        env = cfg.get("server", {}).get("env", {})
+        if not VAULT_PATH:
+            VAULT_PATH = env.get("VAULT_PATH", "")
+        if not EMAIL_QUEUE_PATH:
+            raw = env.get("EMAIL_QUEUE_PATH", "")
+            # skip unexpanded template variables
+            if raw and not raw.startswith("${"):
+                EMAIL_QUEUE_PATH = raw
+    except Exception:
+        pass
+
+_load_mcp_config_env()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -178,6 +204,17 @@ def sf_post(tokens, path, payload):
         return json.loads(resp.read())
 
 
+def sf_get(tokens, path):
+    instance_url = tokens["instance_url"]
+    access_token = tokens["access_token"]
+    req = Request(
+        f"{instance_url}/services/data/v59.0/{path}",
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    )
+    with urlopen(req) as resp:
+        return json.loads(resp.read())
+
+
 def sf_patch(tokens, path, payload):
     instance_url = tokens["instance_url"]
     access_token = tokens["access_token"]
@@ -312,8 +349,10 @@ TOOLS = [
                 "description": {"type": "string", "description": "Full task description or meeting notes"},
                 "activity_date": {"type": "string", "description": "Date of the activity in YYYY-MM-DD format (defaults to today)"},
                 "status": {"type": "string", "description": "Task status: Completed (default), In Progress, Not Started"},
-                "what_id": {"type": "string", "description": "Salesforce Opportunity or Account Id to link this task to (WhatId)"},
-                "who_id": {"type": "string", "description": "Salesforce Contact Id to link this task to (WhoId)"},
+                "what_id": {"type": "string", "description": "Salesforce Opportunity or Account Id to link this task to (WhatId). Alias: opportunity_id"},
+                "opportunity_id": {"type": "string", "description": "Alias for what_id — Salesforce Opportunity Id to link this task to"},
+                "who_id": {"type": "string", "description": "Salesforce Contact Id to link this task to (WhoId). Alias: contact_id"},
+                "contact_id": {"type": "string", "description": "Alias for who_id — Salesforce Contact Id to link this task to"},
                 "type": {"type": "string", "description": "Activity type: Call, Email, Meeting, Note (optional)"},
             },
             "required": ["subject"],
@@ -443,6 +482,141 @@ TOOLS = [
             },
         },
     },
+    # ── Quote Creation ────────────────────────────────────────────────────────────
+    {
+        "name": "sf_search_opportunities",
+        "description": "Search open opportunities by account name, contact name, opportunity name, or machine/application context. Returns ranked matches. Use to find the right opportunity before creating a quote.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_name": {"type": "string", "description": "Company/account name (partial match)"},
+                "contact_name": {"type": "string", "description": "Contact name (partial match) — searches via OpportunityContactRole"},
+                "opportunity_name": {"type": "string", "description": "Opportunity name keywords (partial match)"},
+                "machine_type": {"type": "string", "description": "Machine type or context (searches Name and Description)"},
+                "limit": {"type": "integer", "description": "Max results per search path (default 10)"},
+            },
+        },
+    },
+    {
+        "name": "sf_create_quote",
+        "description": "Create a new Quote record in Salesforce linked to an Opportunity. Returns quote_id, quote_number, and a Salesforce URL. The quote starts in Draft status. Pass custom_fields to set any org-specific fields (e.g. Vendor__c, Machine_Type__c). Use sf_describe_object with object_name='Quote' to discover available custom fields.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "opportunity_id": {"type": "string", "description": "Salesforce Opportunity Id to link this quote to (required)"},
+                "name": {"type": "string", "description": "Quote name (e.g. 'Acme Corp - TruBend 5085 Quote')"},
+                "expiration_date": {"type": "string", "description": "Quote expiration date (YYYY-MM-DD)"},
+                "status": {"type": "string", "description": "Quote status — Draft (default), Needs Review, Approved, Presented, Accepted, Denied"},
+                "pricebook_id": {"type": "string", "description": "Pricebook2 Id. Omit to use the Standard Pricebook."},
+                "payment_terms": {"type": "string", "description": "Payment terms text (e.g. 'Net 30')"},
+                "shipping_handling": {"type": "number", "description": "Shipping and handling amount"},
+                "description": {"type": "string", "description": "Quote description or internal notes"},
+                "billing_name": {"type": "string", "description": "Billing contact name"},
+                "shipping_name": {"type": "string", "description": "Shipping contact name"},
+                "shipping_terms": {"type": "string", "description": "Shipping terms (e.g. 'FOB Destination')"},
+                "custom_fields": {"type": "object", "description": "Any org-specific custom fields as a flat dict of Salesforce API field name → value. Example: {\"Vendor__c\": \"001abc\", \"Machine_Type__c\": \"Press Brake\"}"},
+            },
+            "required": ["opportunity_id", "name"],
+        },
+    },
+    {
+        "name": "sf_get_pricebooks",
+        "description": "List all active pricebooks in Salesforce. Use to find the correct Pricebook2Id before creating a quote or searching for products.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sf_get_pricebook_entries",
+        "description": "Search for products/machines in a Salesforce pricebook. Returns PricebookEntryId, product name, code, and list price — needed to add line items to a quote.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pricebook_id": {"type": "string", "description": "Pricebook2 Id (use sf_get_pricebooks to find)"},
+                "product_name": {"type": "string", "description": "Product or machine name to search (partial match, optional — omit to list all)"},
+                "limit": {"type": "integer", "description": "Max results (default 25)"},
+            },
+            "required": ["pricebook_id"],
+        },
+    },
+    {
+        "name": "sf_add_quote_line_item",
+        "description": "Add a single product/machine line item to an existing Salesforce Quote. Requires a PricebookEntryId from sf_get_pricebook_entries. Use unit_price to override the catalog price. Pass custom_fields for org-specific QuoteLineItem fields. For multiple line items in one call, use sf_add_quote_line_items instead.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "quote_id": {"type": "string", "description": "Salesforce Quote Id"},
+                "pricebook_entry_id": {"type": "string", "description": "PricebookEntry Id (from sf_get_pricebook_entries)"},
+                "quantity": {"type": "number", "description": "Quantity"},
+                "unit_price": {"type": "number", "description": "Unit price (overrides pricebook list price)"},
+                "description": {"type": "string", "description": "Line item description — machine specs, model details, notes"},
+                "sort_order": {"type": "integer", "description": "Sort order for line item display"},
+                "custom_fields": {"type": "object", "description": "Org-specific custom fields as a flat dict of Salesforce API field name → value. Example: {\"Machine_Type__c\": \"Laser\", \"Model__c\": \"TruLaser 5030\"}"},
+            },
+            "required": ["quote_id", "pricebook_entry_id", "quantity"],
+        },
+    },
+    {
+        "name": "sf_add_quote_line_items",
+        "description": "Add multiple line items to a Salesforce Quote in a single call. Each item in the 'line_items' array must have pricebook_entry_id and quantity; unit_price, description, sort_order, and custom_fields are optional per item. Returns per-item success/failure so partial failures don't block the rest. Use this when you have 2+ products to add — saves round-trips vs calling sf_add_quote_line_item repeatedly.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "quote_id": {"type": "string", "description": "Salesforce Quote Id"},
+                "line_items": {
+                    "type": "array",
+                    "description": "List of line items to add",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "pricebook_entry_id": {"type": "string", "description": "PricebookEntry Id"},
+                            "quantity": {"type": "number", "description": "Quantity"},
+                            "unit_price": {"type": "number", "description": "Override unit price"},
+                            "description": {"type": "string", "description": "Line item description"},
+                            "sort_order": {"type": "integer", "description": "Display sort order"},
+                            "custom_fields": {"type": "object", "description": "Custom fields for this line item"},
+                        },
+                        "required": ["pricebook_entry_id", "quantity"],
+                    },
+                },
+            },
+            "required": ["quote_id", "line_items"],
+        },
+    },
+    {
+        "name": "sf_describe_object",
+        "description": "Return field metadata for any Salesforce object (Quote, QuoteLineItem, Opportunity, Contact, Account, etc.). Shows all field names, labels, types, and whether they are custom fields (__c suffix). Use this before creating records to discover what custom fields are available in this org.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "object_name": {"type": "string", "description": "Salesforce API object name (e.g. 'Quote', 'QuoteLineItem', 'Opportunity', 'Account')"},
+                "custom_only": {"type": "boolean", "description": "If true, return only custom fields (__c). Default false returns all fields."},
+            },
+            "required": ["object_name"],
+        },
+    },
+    {
+        "name": "sf_upload_file",
+        "description": "Upload a local file to Salesforce and link it to a record (Quote, Opportunity, Task, etc.). Reads the file from disk, encodes it, and creates a ContentVersion linked via FirstPublishLocationId.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute path to the file, or path relative to vault root"},
+                "title": {"type": "string", "description": "File title in Salesforce (defaults to filename if omitted)"},
+                "linked_record_id": {"type": "string", "description": "Salesforce record Id to attach the file to (Quote Id, Opportunity Id, etc.)"},
+            },
+            "required": ["file_path", "linked_record_id"],
+        },
+    },
+    {
+        "name": "sf_get_opportunity_contacts",
+        "description": "Get all contacts linked to a Salesforce opportunity via OpportunityContactRole. Returns contact name, email, phone, title, and their role on the opportunity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "opportunity_id": {"type": "string", "description": "Salesforce Opportunity Id"},
+            },
+            "required": ["opportunity_id"],
+        },
+    },
     {
         "name": "sf_get_financed_deals",
         "description": "Get Project Management records (machines you've sold) with close dates to calculate predicted replacement windows. Uses 54/60-month lease terms to identify which customers are entering their buying window. Optionally filter by account name, sales rep, or how many months ahead to look.",
@@ -454,6 +628,27 @@ TOOLS = [
                 "include_past_window": {"type": "boolean", "description": "Include deals already past the 60-month mark (default true)"},
                 "limit": {"type": "integer", "description": "Max results (default 200)"},
             },
+        },
+    },
+    {
+        "name": "email_read_pending",
+        "description": "Read pending quote-request emails that have been dropped into the vault's Inbox/Emails/pending/ folder (e.g. by a Power Automate flow or by dragging an .eml file there). Returns each file's content, sender, subject, date, and original filename. After processing, call email_archive_pending to move the file out of the queue.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max files to return (default 5, newest first)"},
+            },
+        },
+    },
+    {
+        "name": "email_archive_pending",
+        "description": "Move a processed email file from Inbox/Emails/pending/ to Inbox/Emails/processed/ so it won't be picked up again on the next run. Call after the Salesforce quote has been successfully created.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Filename returned by email_read_pending (not the full path, just the name)"},
+            },
+            "required": ["filename"],
         },
     },
 ]
@@ -754,10 +949,10 @@ def tool_sf_create_task(args):
     }
     if args.get("description"):
         payload["Description"] = args["description"]
-    if args.get("what_id"):
-        payload["WhatId"] = args["what_id"]
-    if args.get("who_id"):
-        payload["WhoId"] = args["who_id"]
+    if args.get("what_id") or args.get("opportunity_id"):
+        payload["WhatId"] = args.get("what_id") or args.get("opportunity_id")
+    if args.get("who_id") or args.get("contact_id"):
+        payload["WhoId"] = args.get("who_id") or args.get("contact_id")
     if args.get("type"):
         payload["Type"] = args["type"]
     if OWNER_ID:
@@ -1313,6 +1508,534 @@ def tool_sf_get_financed_deals(args):
     }
 
 
+def tool_sf_search_opportunities(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    limit = args.get("limit", 10)
+    owner_filter = f"AND OwnerId = '{OWNER_ID}'" if OWNER_ID else ""
+
+    filters = ["IsClosed = false"]
+    if args.get("account_name"):
+        filters.append(f"Account.Name LIKE '%{args['account_name']}%'")
+    if args.get("opportunity_name"):
+        filters.append(f"Name LIKE '%{args['opportunity_name']}%'")
+    if args.get("machine_type"):
+        mt = args["machine_type"].replace("'", "\\'")
+        filters.append(f"(Name LIKE '%{mt}%' OR Description LIKE '%{mt}%')")
+
+    where = " AND ".join(filters)
+    soql = f"""
+        SELECT Id, Name, StageName, Amount, CloseDate, Probability,
+               Account.Name, Account.Id, Owner.Name, Description, NextStep
+        FROM Opportunity
+        WHERE {where} {owner_filter}
+        ORDER BY LastModifiedDate DESC
+        LIMIT {limit}
+    """
+    result = sf_query(tokens, soql)
+    seen_ids = set()
+
+    def _map_opp(r):
+        return {
+            "id": r["Id"],
+            "name": r["Name"],
+            "stage": r.get("StageName"),
+            "amount": r.get("Amount"),
+            "close_date": r.get("CloseDate"),
+            "account": (r.get("Account") or {}).get("Name"),
+            "account_id": (r.get("Account") or {}).get("Id"),
+            "owner": (r.get("Owner") or {}).get("Name"),
+            "probability": r.get("Probability"),
+            "description": r.get("Description"),
+            "next_step": r.get("NextStep"),
+        }
+
+    opps = []
+    for r in result.get("records", []):
+        seen_ids.add(r["Id"])
+        opps.append(_map_opp(r))
+
+    # Contact-based search via OpportunityContactRole
+    if args.get("contact_name") and len(opps) < limit:
+        cname = args["contact_name"].replace("'", "\\'")
+        c_result = sf_query(tokens, f"SELECT Id FROM Contact WHERE Name LIKE '%{cname}%' LIMIT 5")
+        for c in c_result.get("records", []):
+            role_result = sf_query(tokens, f"SELECT OpportunityId FROM OpportunityContactRole WHERE ContactId = '{c['Id']}' LIMIT 10")
+            for role in role_result.get("records", []):
+                oid = role["OpportunityId"]
+                if oid not in seen_ids:
+                    seen_ids.add(oid)
+                    opp_result = sf_query(tokens, f"""
+                        SELECT Id, Name, StageName, Amount, CloseDate, Probability,
+                               Account.Name, Account.Id, Owner.Name, Description, NextStep
+                        FROM Opportunity WHERE Id = '{oid}' AND IsClosed = false LIMIT 1
+                    """)
+                    for r in opp_result.get("records", []):
+                        opps.append(_map_opp(r))
+
+    return {"opportunities": opps, "count": len(opps)}
+
+
+def tool_sf_create_quote(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    payload = {
+        "Name": args["name"],
+        "OpportunityId": args["opportunity_id"],
+        "Status": args.get("status", "Draft"),
+    }
+    for field, key in [
+        ("expiration_date", "ExpirationDate"),
+        ("pricebook_id", "Pricebook2Id"),
+        ("payment_terms", "PaymentTerms"),
+        ("description", "Description"),
+        ("billing_name", "BillingName"),
+        ("shipping_name", "ShippingName"),
+        ("shipping_terms", "ShippingTerms"),
+    ]:
+        if args.get(field):
+            payload[key] = args[field]
+    if args.get("shipping_handling") is not None:
+        payload["ShippingHandling"] = args["shipping_handling"]
+    if args.get("custom_fields"):
+        payload.update(args["custom_fields"])
+
+    result = sf_post(tokens, "sobjects/Quote", payload)
+    if not result.get("success"):
+        return {"error": "Failed to create quote", "errors": result.get("errors", [])}
+
+    quote_id = result["id"]
+    instance_url = tokens["instance_url"]
+    q_data = sf_query(tokens, f"SELECT QuoteNumber FROM Quote WHERE Id = '{quote_id}' LIMIT 1")
+    quote_number = (q_data.get("records") or [{}])[0].get("QuoteNumber")
+
+    return {
+        "success": True,
+        "quote_id": quote_id,
+        "quote_number": quote_number,
+        "quote_url": f"{instance_url}/lightning/r/Quote/{quote_id}/view",
+        "opportunity_url": f"{instance_url}/lightning/r/Opportunity/{args['opportunity_id']}/view",
+    }
+
+
+def tool_sf_get_pricebooks(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    soql = "SELECT Id, Name, IsActive, IsStandard FROM Pricebook2 WHERE IsActive = true ORDER BY IsStandard DESC, Name ASC LIMIT 20"
+    result = sf_query(tokens, soql)
+    pricebooks = [
+        {"id": r["Id"], "name": r["Name"], "is_standard": r.get("IsStandard", False)}
+        for r in result.get("records", [])
+    ]
+    return {"pricebooks": pricebooks, "count": len(pricebooks)}
+
+
+def tool_sf_get_pricebook_entries(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    pricebook_id = args["pricebook_id"]
+    limit = args.get("limit", 25)
+    name_filter = f"AND Product2.Name LIKE '%{args['product_name']}%'" if args.get("product_name") else ""
+    soql = f"""
+        SELECT Id, Product2Id, Product2.Name, Product2.Description,
+               Product2.ProductCode, UnitPrice, IsActive
+        FROM PricebookEntry
+        WHERE Pricebook2Id = '{pricebook_id}' AND IsActive = true
+        {name_filter}
+        ORDER BY Product2.Name ASC
+        LIMIT {limit}
+    """
+    result = sf_query(tokens, soql)
+    entries = []
+    for r in result.get("records", []):
+        p = r.get("Product2") or {}
+        entries.append({
+            "pricebook_entry_id": r["Id"],
+            "product_id": r.get("Product2Id"),
+            "product_name": p.get("Name"),
+            "product_code": p.get("ProductCode"),
+            "description": p.get("Description"),
+            "list_price": r.get("UnitPrice"),
+        })
+    return {"entries": entries, "count": len(entries)}
+
+
+def tool_sf_add_quote_line_item(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    payload = {
+        "QuoteId": args["quote_id"],
+        "PricebookEntryId": args["pricebook_entry_id"],
+        "Quantity": args["quantity"],
+    }
+    if args.get("unit_price") is not None:
+        payload["UnitPrice"] = args["unit_price"]
+    if args.get("description"):
+        payload["Description"] = args["description"]
+    if args.get("sort_order") is not None:
+        payload["SortOrder"] = args["sort_order"]
+    if args.get("custom_fields"):
+        payload.update(args["custom_fields"])
+
+    result = sf_post(tokens, "sobjects/QuoteLineItem", payload)
+    if not result.get("success"):
+        return {"error": "Failed to add line item", "errors": result.get("errors", [])}
+    return {"success": True, "line_item_id": result.get("id"), "quote_id": args["quote_id"]}
+
+
+def tool_sf_add_quote_line_items(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    quote_id = args["quote_id"]
+    results = []
+    for idx, item in enumerate(args.get("line_items", [])):
+        payload = {
+            "QuoteId": quote_id,
+            "PricebookEntryId": item["pricebook_entry_id"],
+            "Quantity": item["quantity"],
+        }
+        if item.get("unit_price") is not None:
+            payload["UnitPrice"] = item["unit_price"]
+        if item.get("description"):
+            payload["Description"] = item["description"]
+        if item.get("sort_order") is not None:
+            payload["SortOrder"] = item["sort_order"]
+        if item.get("custom_fields"):
+            payload.update(item["custom_fields"])
+
+        r = sf_post(tokens, "sobjects/QuoteLineItem", payload)
+        if r.get("success"):
+            results.append({"index": idx, "success": True, "line_item_id": r.get("id"), "pricebook_entry_id": item["pricebook_entry_id"]})
+        else:
+            results.append({"index": idx, "success": False, "errors": r.get("errors", []), "pricebook_entry_id": item["pricebook_entry_id"]})
+
+    succeeded = sum(1 for r in results if r["success"])
+    return {
+        "quote_id": quote_id,
+        "total": len(results),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+
+
+def tool_sf_describe_object(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    object_name = args["object_name"]
+    custom_only = args.get("custom_only", False)
+
+    from urllib.parse import quote as url_quote
+    url = f"sobjects/{url_quote(object_name)}/describe"
+    try:
+        data = sf_get(tokens, url)
+    except Exception as e:
+        return {"error": f"Describe failed: {e}"}
+
+    fields = []
+    for f in data.get("fields", []):
+        is_custom = f.get("name", "").endswith("__c")
+        if custom_only and not is_custom:
+            continue
+        fields.append({
+            "name": f.get("name"),
+            "label": f.get("label"),
+            "type": f.get("type"),
+            "custom": is_custom,
+            "updateable": f.get("updateable", True),
+            "nillable": f.get("nillable", True),
+            "length": f.get("length"),
+            "pick_values": [p["value"] for p in f.get("picklistValues", []) if p.get("active")] if f.get("picklistValues") else None,
+        })
+
+    return {
+        "object": object_name,
+        "label": data.get("label"),
+        "field_count": len(fields),
+        "fields": fields,
+    }
+
+
+def tool_sf_upload_file(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    file_path = args["file_path"]
+    if not os.path.isabs(file_path) and VAULT_PATH:
+        file_path = os.path.join(VAULT_PATH, file_path)
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    filename = os.path.basename(file_path)
+    title = args.get("title") or filename
+    linked_record_id = args["linked_record_id"]
+
+    with open(file_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    # FirstPublishLocationId auto-creates the ContentDocumentLink
+    cv_payload = {
+        "Title": title,
+        "PathOnClient": filename,
+        "VersionData": encoded,
+        "FirstPublishLocationId": linked_record_id,
+    }
+    result = sf_post(tokens, "sobjects/ContentVersion", cv_payload)
+    if not result.get("success"):
+        return {"error": "Failed to upload file", "errors": result.get("errors", [])}
+
+    cv_id = result["id"]
+    cv_data = sf_query(tokens, f"SELECT ContentDocumentId, ContentSize FROM ContentVersion WHERE Id = '{cv_id}' LIMIT 1")
+    rec = (cv_data.get("records") or [{}])[0]
+
+    return {
+        "success": True,
+        "content_version_id": cv_id,
+        "content_document_id": rec.get("ContentDocumentId"),
+        "title": title,
+        "filename": filename,
+        "size_bytes": rec.get("ContentSize"),
+        "linked_to": linked_record_id,
+    }
+
+
+def tool_sf_get_opportunity_contacts(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    opp_id = args["opportunity_id"]
+    soql = f"""
+        SELECT Contact.Id, Contact.Name, Contact.Email, Contact.Phone,
+               Contact.Title, Role, IsPrimary
+        FROM OpportunityContactRole
+        WHERE OpportunityId = '{opp_id}'
+    """
+    result = sf_query(tokens, soql)
+    contacts = []
+    for r in result.get("records", []):
+        c = r.get("Contact") or {}
+        contacts.append({
+            "contact_id": c.get("Id"),
+            "name": c.get("Name"),
+            "email": c.get("Email"),
+            "phone": c.get("Phone"),
+            "title": c.get("Title"),
+            "role": r.get("Role"),
+            "is_primary": r.get("IsPrimary"),
+        })
+    return {"contacts": contacts, "count": len(contacts)}
+
+
+def _decode_header_value(raw):
+    parts = email_decode_header(raw or "")
+    out = []
+    for fragment, enc in parts:
+        if isinstance(fragment, bytes):
+            out.append(fragment.decode(enc or "utf-8", errors="replace"))
+        else:
+            out.append(fragment)
+    return "".join(out)
+
+
+def _parse_eml(file_path):
+    """Parse a .eml file and return structured fields."""
+    with open(file_path, "rb") as f:
+        msg = email_lib.message_from_bytes(f.read())
+    subject = _decode_header_value(msg.get("Subject", ""))
+    from_ = _decode_header_value(msg.get("From", ""))
+    date_ = msg.get("Date", "")
+    body_parts = []
+    attachments = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ct = part.get_content_type()
+            cd = str(part.get("Content-Disposition", ""))
+            if ct == "text/plain" and "attachment" not in cd:
+                charset = part.get_content_charset() or "utf-8"
+                body_parts.append(part.get_payload(decode=True).decode(charset, errors="replace"))
+            elif "attachment" in cd:
+                fn = part.get_filename()
+                if fn:
+                    attachments.append(_decode_header_value(fn))
+    else:
+        charset = msg.get_content_charset() or "utf-8"
+        payload = msg.get_payload(decode=True)
+        if payload:
+            body_parts.append(payload.decode(charset, errors="replace"))
+    return {
+        "from": from_,
+        "subject": subject,
+        "date": date_,
+        "body": "\n".join(body_parts),
+        "attachments": attachments,
+    }
+
+
+def _strip_html(text):
+    """Strip HTML tags and decode common entities from an HTML email body."""
+    from html.parser import HTMLParser
+
+    class _Stripper(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._parts = []
+            self._skip = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"):
+                self._skip = True
+            elif tag in ("br", "p", "div", "tr", "li"):
+                self._parts.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style"):
+                self._skip = False
+
+        def handle_data(self, data):
+            if not self._skip:
+                self._parts.append(data)
+
+    s = _Stripper()
+    s.feed(text)
+    result = "".join(s._parts)
+    # Collapse runs of blank lines to at most two
+    import re
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _parse_txt(file_path):
+    """Parse a plain-text (or HTML) email file saved by Power Automate."""
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    from_ = subject = date_ = ""
+    body_lines = []
+    in_headers = True
+    for line in content.splitlines():
+        if in_headers:
+            low = line.lower()
+            if low.startswith("from:"):
+                from_ = line[5:].strip()
+            elif low.startswith("subject:"):
+                subject = line[8:].strip()
+            elif low.startswith("date:"):
+                date_ = line[5:].strip()
+            elif line.strip() == "":
+                in_headers = False
+            else:
+                body_lines.append(line)
+        else:
+            body_lines.append(line)
+    body = "\n".join(body_lines)
+    # PA may write the raw HTML body when the Html-to-text connector is unavailable.
+    if "<html" in body.lower() or "<!doctype" in body.lower():
+        body = _strip_html(body)
+    return {
+        "from": from_,
+        "subject": subject,
+        "date": date_,
+        "body": body,
+        "attachments": [],
+    }
+
+
+def _get_email_queue_path():
+    """Return EMAIL_QUEUE_PATH, falling back to salesforce.json config if env var not set."""
+    if EMAIL_QUEUE_PATH:
+        return EMAIL_QUEUE_PATH
+    # Re-read config file in case the module-level load ran before env was available
+    try:
+        config_path = Path(__file__).resolve().parent.parent.parent / ".claude" / "mcp" / "salesforce.json"
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        val = cfg.get("server", {}).get("env", {}).get("EMAIL_QUEUE_PATH", "")
+        if val and not val.startswith("${"):
+            return val
+    except Exception:
+        pass
+    return ""
+
+
+def tool_email_read_pending(args):
+    limit = min(args.get("limit", 5), 20)
+    queue_path = _get_email_queue_path()
+    if queue_path:
+        pending_dir = os.path.join(queue_path, "pending")
+    elif VAULT_PATH:
+        pending_dir = os.path.join(VAULT_PATH, "Inbox", "Emails", "pending")
+    else:
+        pending_dir = None
+    if not pending_dir or not os.path.isdir(pending_dir):
+        return {
+            "emails": [],
+            "count": 0,
+            "pending_dir": pending_dir,
+            "message": (
+                "Pending folder not found. "
+                "Create Inbox/Emails/pending/ in your vault and have Power Automate "
+                "save email files there, or drag .eml files into it manually."
+            ),
+        }
+
+    files = sorted(
+        [f for f in Path(pending_dir).iterdir() if f.suffix in (".eml", ".txt", ".md") and f.is_file()],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+
+    emails = []
+    for f in files:
+        try:
+            if f.suffix == ".eml":
+                parsed = _parse_eml(str(f))
+            else:
+                parsed = _parse_txt(str(f))
+            parsed["filename"] = f.name
+            parsed["path"] = str(f)
+            parsed["body"] = parsed["body"][:8000]
+            parsed["body_truncated"] = len(parsed["body"]) > 8000
+            emails.append(parsed)
+        except Exception as e:
+            emails.append({"filename": f.name, "error": str(e)})
+
+    return {"emails": emails, "count": len(emails), "pending_dir": pending_dir}
+
+
+def tool_email_archive_pending(args):
+    filename = args["filename"]
+    queue_path = _get_email_queue_path()
+    if queue_path:
+        pending_dir = Path(queue_path) / "pending"
+        processed_dir = Path(queue_path) / "processed"
+    elif VAULT_PATH:
+        pending_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "pending"
+        processed_dir = Path(VAULT_PATH) / "Inbox" / "Emails" / "processed"
+    else:
+        return {"error": "Neither EMAIL_QUEUE_PATH nor VAULT_PATH is set."}
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    src = pending_dir / filename
+    if not src.exists():
+        return {"error": f"File not found in pending/: {filename}"}
+    dst = processed_dir / filename
+    if dst.exists():
+        stem, suffix = os.path.splitext(filename)
+        dst = processed_dir / f"{stem}_{int(datetime.now().timestamp())}{suffix}"
+    src.rename(dst)
+    # OneDrive syncs the file move to the cloud automatically — no git needed.
+    return {"success": True, "archived_to": str(dst)}
+
+
 TOOL_FNS = {
     "sf_authenticate": tool_sf_authenticate,
     "sf_get_pipeline": tool_sf_get_pipeline,
@@ -1335,6 +2058,17 @@ TOOL_FNS = {
     "sf_update_asset": tool_sf_update_asset,
     "sf_get_new_assets": tool_sf_get_new_assets,
     "sf_get_financed_deals": tool_sf_get_financed_deals,
+    "sf_search_opportunities": tool_sf_search_opportunities,
+    "sf_create_quote": tool_sf_create_quote,
+    "sf_get_pricebooks": tool_sf_get_pricebooks,
+    "sf_get_pricebook_entries": tool_sf_get_pricebook_entries,
+    "sf_add_quote_line_item": tool_sf_add_quote_line_item,
+    "sf_add_quote_line_items": tool_sf_add_quote_line_items,
+    "sf_describe_object": tool_sf_describe_object,
+    "sf_upload_file": tool_sf_upload_file,
+    "sf_get_opportunity_contacts": tool_sf_get_opportunity_contacts,
+    "email_read_pending": tool_email_read_pending,
+    "email_archive_pending": tool_email_archive_pending,
 }
 
 

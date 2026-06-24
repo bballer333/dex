@@ -1,0 +1,16 @@
+{
+  "name": "salesforce",
+  "description": "Salesforce CRM — contacts, accounts, opportunities, quotes, assets, activities, and file uploads",
+  "server": {
+    "command": "python",
+    "args": [".scripts/salesforce-mcp/server.py"],
+    "env": {
+      "VAULT_PATH": "C:\\Users\\Chris\\Documents\\GitHub\\dex",
+      "SF_CLIENT_ID": "${SF_CLIENT_ID}",
+      "SF_CLIENT_SECRET": "${SF_CLIENT_SECRET}",
+      "SF_OWNER_ID": "${SF_OWNER_ID}",
+      "EMAIL_QUEUE_PATH": "C:\\Users\\Chris\\OneDrive - Mid Atlantic Machinery Inc\\Dex-Email-Queue"
+    }
+  },
+  "notes": "OAuth tokens stored in ~/.claude/sf_tokens.json. Run sf_authenticate once to connect. Provides pipeline, contacts, accounts, opportunities, quotes (read+create), assets, tasks, file uploads, and quote line items."
+}
