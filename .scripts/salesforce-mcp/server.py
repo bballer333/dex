@@ -726,7 +726,7 @@ def tool_sf_get_account(args):
         return {"error": "Not authenticated. Run sf_authenticate first."}
     name = args["name"]
     owner_filter = f"AND OwnerId = '{OWNER_ID}'" if OWNER_ID else ""
-    soql = f"SELECT Id, Name, Industry, Phone, Website, AnnualRevenue, NumberOfEmployees FROM Account WHERE Name LIKE '%{name}%' {owner_filter} LIMIT 5"
+    soql = f"SELECT Id, Name, Phone, Website, BillingCity, BillingState, BillingPostalCode, Division__c, Territory__c, CompanyType__c, Account_Status__c, Account_Rating__c, Open_Deal_Amount__c, Open_Deal_Count__c, Closed_Deal_Amount__c, Closed_Deal_Count__c FROM Account WHERE Name LIKE '%{name}%' {owner_filter} LIMIT 5"
     accounts = sf_query(tokens, soql).get("records", [])
     if not accounts:
         return {"error": f"No account found matching '{name}'"}

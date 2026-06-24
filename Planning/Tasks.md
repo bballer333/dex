@@ -1,7 +1,7 @@
 # Tasks
 
 ## This Week
-- [ ] **Send Pennsylvania Steel - Bensalem Plate Saw quote to Phil and Mike Loveland** ^task-20260622-001
+- [x] **Send Pennsylvania Steel - Bensalem Plate Saw quote to Phil and Mike Loveland** ^task-20260622-001
 	- Pillar: Pipeline & Revenue | Priority: P2
 
 

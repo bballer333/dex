@@ -56,9 +56,9 @@ Very open week. Use Mon/Wed/Thu for proactive outreach and deep work on big deal
 
 ## 📬 Email / Follow-ups
 
-- [ ] Reply to Patrick Thornton (Pat Mooney) — schedule aluminum upcut saw call, Wed–Fri available
-- [ ] Respond to Bridget re: FMA Young Member Group Baseball event 6/30 (yes/no)
-- [ ] Follow up on Patrick Kilgallen Teams message re: TJ Snow
+- [x] Reply to Patrick Thornton (Pat Mooney) — schedule aluminum upcut saw call, Wed–Fri available
+- [x] Respond to Bridget re: FMA Young Member Group Baseball event 6/30 (yes/no)
+- [x] Follow up on Patrick Kilgallen Teams message re: TJ Snow
 
 ---
 

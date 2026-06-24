@@ -9,5 +9,6 @@
   "spellcheck": true,
   "strictLineBreaks": false,
   "readableLineLength": true,
-  "defaultViewMode": "preview"
+  "defaultViewMode": "preview",
+  "showUnsupportedFiles": false
 }
