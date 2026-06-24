@@ -569,7 +569,7 @@ async function callTool(name, args, token, instance) {
     if (args.account_name) where += ` AND Account.Name LIKE '%${args.account_name.replace(/'/g, "\\'")}%'`;
     if (args.stage)        where += ` AND StageName LIKE '%${args.stage.replace(/'/g, "\\'")}%'`;
     return sfQuery(
-      `SELECT Id, Name, StageName, Amount, CloseDate, Account.Name, Account.Id, Description FROM Opportunity WHERE ${where} ORDER BY CloseDate ASC LIMIT ${args.limit || 20}`,
+      `SELECT Id, Name, StageName, Amount, CloseDate, Account.Name, Account.Id, Description, NextStep, Probability, Owner.Name, Vendor__r.Name, Opp_Machine_Type__c, TouchNextDate__c, LeadSource FROM Opportunity WHERE ${where} ORDER BY CloseDate ASC LIMIT ${args.limit || 20}`,
       token, instance
     );
   }
