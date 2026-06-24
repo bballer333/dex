@@ -344,6 +344,77 @@ Also gather:
 - **People**: Context for meeting attendees
 - **Self-Learning Alerts**: Changelog updates, pending learnings
 
+### 5.11 Pipeline Snapshot (Sales role)
+
+Scan all `Projects/*.md` files and extract Stage, Amount, Close Date, and deal name. Then:
+
+1. **Group by stage** — Negotiation → Favorable → Quoting → Discovery → Active Project
+   - **Note:** "Active Project" is an open opportunity stage (a deal currently being worked), NOT a closed/won order. Treat it the same as other open stages.
+2. **Flag urgency** for each Negotiation deal:
+   - Close date in the past → ⚠️ Overdue — needs attention
+   - Close date within 14 days → 🔥 Closing soon
+   - Close date within 30 days → 📅 On horizon
+3. **Show totals per stage** (sum of dollar amounts, count of deals)
+4. **Favorable deals — show individually, not as a bulk paragraph.** Each deal gets its own row with a specific day-of-week action assigned based on the weekly plan. Sort by amount descending. This is what makes the Favorable sweep actionable rather than aspirational.
+5. **Quoting — show top deals by amount** (≥$200K). Skip small deals in the daily plan — they live in the task list instead.
+
+**Surface in the plan:**
+
+> **Pipeline Snapshot**
+>
+> | Stage | Deals | Total |
+> |-------|-------|-------|
+> | Negotiation | 2 | $1.23M |
+> | Favorable | 10 | $1.6M+ |
+> | Quoting | 47 | ~$6.3M |
+>
+> **⚠️ Negotiation — action required:**
+> - ⚠️ Hanwha Philly Shipyard — $1.09M — 204 days past close
+> - ⚠️ James Cox & Sons TruBend 1100 — $139K — 24 days past close
+>
+> **Top Quoting (≥$200K):**
+> | Deal | Amount | Action |
+> |------|--------|--------|
+> | S&W Metal — TruBend Cell 5000 | $942K | Follow up today |
+> | ASGCO Mfg — TL3030 Laser | $755K | Check status Thu |
+>
+> **Favorable — individual deal list:**
+> | Deal | Amount | Assigned Day |
+> |------|--------|--------------|
+> | Kelly Iron Works — Robotic Beam Line | $482K | Wed |
+> | Levan Associates — BeamMaster | $413K | Wed |
+> | Dynamic Metal — TruBend | $165K | Thu |
+> | Hale Trailer — Press Brake | $127K | Thu |
+> | SS Industries — Cobot Welder | $125K | Thu |
+> | ... | ... | ... |
+
+**If no Projects/ folder:** Skip silently.
+
+### 5.12 Closed Won — Project Management (Delivery Milestones)
+
+Call `sf_get_project_management` from the Salesforce MCP to pull all active `Project_Management__c` records (closed won orders in delivery).
+
+The tool auto-computes `pending_actions` for each record based on actual checkbox fields in Salesforce:
+- **`Intro_Customer_Call__c` = false** → Make intro customer call (early action)
+- **`Intro_Vendor_Email__c` = false** → Send intro vendor email (early action)
+- **`Deposit_Paid__c` = false** → 💰 Deposit not yet received (flag any time)
+- **Within 30 days + `PIM_Sent__c` = false** → Send pre-installation manual to customer
+- **Within 14 days** → 🔴 DELIVERY IMMINENT — confirm pre-install checklist complete
+- **`Ship_in_4_weeks__c` = true** → Machine shipping soon — coordinate with customer
+
+**Surface in the plan only if there are records with non-empty `pending_actions`:**
+
+> **📦 Active Orders — Milestone Check**
+>
+> | Customer | Machine | Ship Date | Install Date | Days Out | Pending |
+> |----------|---------|-----------|--------------|----------|---------|
+> | Hanwha Philly Shipyard | TEC 80' Laser | 2026-07-01 | 2026-07-22 | 30 days | Send PIM |
+> | Gottstein Corp | FLO Mach500 | — | 2026-09-10 | 80 days | 💰 Deposit not received, intro call |
+
+**Show `ships_in_4_weeks = true` records prominently** — these need immediate attention regardless of install date.
+
+**If Salesforce MCP unavailable or PM object returns no records with pending actions:** Skip this section silently.
+
 ---
 
 ## Step 6: Synthesis
@@ -482,17 +553,72 @@ integrations_used: [calendar, tasks, people, work-intelligence]
 
 ---
 
+## 💼 Pipeline Snapshot
+
+| Stage | Deals | Total |
+|-------|-------|-------|
+| Negotiation | {{N}} | ${{X}} |
+| Favorable | {{N}} | ${{X}} |
+| Quoting | {{N}} | ${{X}} |
+
+**⚠️ Negotiation — action required:**
+{{For each Negotiation deal}}
+- {{Flag}} **{{Deal name}}** — ${{Amount}} — {{days}} days {{past/until}} close date
+
+**Top Quoting (≥$200K):**
+| Deal | Amount | Action |
+|------|--------|--------|
+{{For each Quoting deal ≥$200K, sorted by amount desc}}
+| {{Account}} — {{Product}} | ${{Amount}} | {{Specific action + day}} |
+
+**Favorable — this week's sweep:**
+| Deal | Amount | Day |
+|------|--------|-----|
+{{For each Favorable deal, sorted by amount desc, assign a day Wed/Thu}}
+| {{Account}} — {{Product}} | ${{Amount}} | {{Day}} |
+
+---
+
+## 📦 Active Orders — Milestone Check
+
+*Pulled from Salesforce Project Management (closed won orders in delivery)*
+
+{{If PM records exist with actionable milestones}}
+| Customer | Machine | Ship Date | Install Date | Days Out | Pending |
+|----------|---------|-----------|--------------|----------|---------|
+| {{Account}} | {{Machine}} | {{Ship Date}} | {{Install Date}} | {{N}} days | {{pending_actions joined}} |
+
+{{If no PM records or all milestones are clear}} *No delivery milestones due this week.*
+
+---
+
+## ✅ Tasks
+
+### Do today
+{{Tasks directly tied to today's top 3 focus items, or that pair with today's call blocks}}
+- [ ] {{Task}}
+
+### Queue — this week
+{{Remaining "This Week" tasks not already in "Do today"}}
+
+### Overdue 2026 — warm accounts
+{{Top 5 overdue 2026 tasks as a table, most recent due date first}}
+
+*Full overdue list in Planning/Tasks.md*
+
+---
+
 ## ⚠️ Heads Up
 
 - {{Warning about lagging weekly priority}}
 - {{Commitment due today}}
-- {{Back-to-back meetings}}
-- {{Other flags}}
+- {{Back-to-back meetings or calendar conflicts}}
+- {{Other flags — cross-contact opportunities, closing deadlines, etc.}}
 
 ---
 
 *Generated: {{timestamp}}*
-*Week progress: {{X}}/{{Y}} priorities on track*
+*Pipeline: {{N}} Negotiation (${{X}}) · {{N}} Favorable (${{X}}) · {{N}} Quoting (${{X}})*
 ```
 
 ---

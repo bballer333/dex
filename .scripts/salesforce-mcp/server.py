@@ -344,6 +344,17 @@ TOOLS = [
         },
     },
     {
+        "name": "sf_get_project_management",
+        "description": "Get Project Management records (Project_Management__c — closed won orders in delivery). Returns account, machine type/model, ship date, install date, and checkbox milestone status (Deposit_Paid__c, PIM_Sent__c, Intro_Customer_Call__c, Intro_Vendor_Email__c). Auto-computes pending actions based on days until install. Use in daily planning to surface upcoming deliveries and overdue milestones.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max results (default 50)"},
+                "days_ahead": {"type": "integer", "description": "Only return records with install date within this many days (optional)"},
+            },
+        },
+    },
+    {
         "name": "sf_update_opportunity_notes",
         "description": "Update the Next Steps and/or Description fields on a Salesforce opportunity. Use after decisions are made or next actions are defined.",
         "inputSchema": {
@@ -429,6 +440,19 @@ TOOLS = [
             "properties": {
                 "days": {"type": "integer", "description": "Look-back window in days (default 30)"},
                 "include_competitor": {"type": "boolean", "description": "Include competitor equipment (default true)"},
+            },
+        },
+    },
+    {
+        "name": "sf_get_financed_deals",
+        "description": "Get Project Management records (machines you've sold) with close dates to calculate predicted replacement windows. Uses 54/60-month lease terms to identify which customers are entering their buying window. Optionally filter by account name, sales rep, or how many months ahead to look.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account_name": {"type": "string", "description": "Filter by account name (partial match)"},
+                "months_ahead": {"type": "integer", "description": "Only return deals whose 60-month window closes within this many months (default: all)"},
+                "include_past_window": {"type": "boolean", "description": "Include deals already past the 60-month mark (default true)"},
+                "limit": {"type": "integer", "description": "Max results (default 200)"},
             },
         },
     },
@@ -817,6 +841,84 @@ def tool_sf_get_completed_tasks(args):
     return {"tasks": tasks, "count": len(tasks)}
 
 
+def tool_sf_get_project_management(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    import datetime
+    limit = args.get("limit", 50)
+    days_ahead = args.get("days_ahead")
+    date_filter = ""
+    if days_ahead:
+        cutoff = (datetime.date.today() + datetime.timedelta(days=days_ahead)).isoformat()
+        date_filter = f"AND Install_Date__c <= {cutoff}"
+    rep_filter = f"AND Sales_Rep__c = '{OWNER_ID}'" if OWNER_ID else ""
+    soql = f"""
+        SELECT Id, Name,
+               Account_Name__r.Name,
+               Opportunity_Name__r.Name,
+               OWU_Ship_Date__c, Updated_Ship_Date__c, Install_Date__c,
+               Deposit_Paid__c, PIM_Sent__c,
+               Intro_Customer_Call__c, Intro_Vendor_Email__c,
+               Status__c, Machine_Type__c, Model__c,
+               Next_Steps__c, Sale_Close_Date__c, Ship_in_4_weeks__c
+        FROM Project_Management__c
+        WHERE Install_Date__c != null
+        {rep_filter} {date_filter}
+        ORDER BY Install_Date__c ASC NULLS LAST
+        LIMIT {limit}
+    """
+    result = sf_query(tokens, soql)
+    today = datetime.date.today()
+    records = []
+    for r in result.get("records", []):
+        install_raw = r.get("Install_Date__c")
+        ship_raw = r.get("Updated_Ship_Date__c") or r.get("OWU_Ship_Date__c")
+        install_date = datetime.date.fromisoformat(install_raw) if install_raw else None
+        days_until_install = (install_date - today).days if install_date else None
+        pim_sent = r.get("PIM_Sent__c", False)
+        deposit_paid = r.get("Deposit_Paid__c", False)
+
+        # Compute all pending milestone actions
+        actions = []
+        if days_until_install is not None:
+            if days_until_install <= 14 and not pim_sent:
+                actions.append("⚠️ DELIVERY IMMINENT — PIM not sent yet!")
+            elif days_until_install <= 14:
+                actions.append("🔴 DELIVERY IMMINENT — confirm pre-install checklist complete")
+            if days_until_install <= 30 and not pim_sent:
+                actions.append("Send pre-installation manual (PIM) to customer")
+            if days_until_install <= 60:
+                actions.append("Confirm foundation/site requirements with customer")
+            if not r.get("Intro_Customer_Call__c"):
+                actions.append("Make intro customer call")
+            if not r.get("Intro_Vendor_Email__c"):
+                actions.append("Send intro vendor email")
+        if not deposit_paid:
+            actions.append("💰 Deposit not yet received")
+
+        records.append({
+            "name": r.get("Name"),
+            "account": r.get("Account_Name__r", {}).get("Name") if r.get("Account_Name__r") else None,
+            "opportunity": r.get("Opportunity_Name__r", {}).get("Name") if r.get("Opportunity_Name__r") else None,
+            "machine_type": r.get("Machine_Type__c"),
+            "model": r.get("Model__c"),
+            "status": r.get("Status__c"),
+            "ship_date": ship_raw,
+            "ships_in_4_weeks": r.get("Ship_in_4_weeks__c", False),
+            "install_date": install_raw,
+            "days_until_install": days_until_install,
+            "deposit_paid": deposit_paid,
+            "pim_sent": pim_sent,
+            "intro_customer_call": r.get("Intro_Customer_Call__c", False),
+            "intro_vendor_email": r.get("Intro_Vendor_Email__c", False),
+            "sale_close_date": r.get("Sale_Close_Date__c"),
+            "next_steps": r.get("Next_Steps__c"),
+            "pending_actions": actions,
+        })
+    return {"project_management_records": records, "count": len(records)}
+
+
 def tool_sf_update_opportunity_notes(args):
     tokens = get_valid_tokens()
     if not tokens:
@@ -1085,6 +1187,132 @@ def tool_sf_get_new_assets(args):
     }
 
 
+_EARLY_TERM = 54   # months — previous standard lease term
+_STD_TERM   = 60   # months — common standard lease term
+
+
+def _replacement_window(close_date_str):
+    """Return window info based on 54/60-month lease terms from close date."""
+    if not close_date_str:
+        return None
+    try:
+        close = datetime.strptime(close_date_str[:10], "%Y-%m-%d").date()
+        today = date.today()
+        months_elapsed = (today.year - close.year) * 12 + (today.month - close.month)
+
+        early_end = close + timedelta(days=_EARLY_TERM * 30)
+        std_end   = close + timedelta(days=_STD_TERM  * 30)
+        days_to_std = (std_end - today).days
+
+        if months_elapsed >= _STD_TERM:
+            status = "PAST_WINDOW"
+            urgency = "CRITICAL"
+        elif months_elapsed >= _EARLY_TERM:
+            status = "IN_WINDOW"   # past 54mo, still within 60mo
+            urgency = "CRITICAL"
+        elif days_to_std <= 180:
+            status = "APPROACHING"
+            urgency = "HIGH"
+        elif days_to_std <= 365:
+            status = "UPCOMING"
+            urgency = "MEDIUM"
+        else:
+            status = "ACTIVE"
+            urgency = "LOW"
+
+        return {
+            "months_elapsed": months_elapsed,
+            "early_end_date": early_end.isoformat(),   # 54mo
+            "std_end_date":   std_end.isoformat(),      # 60mo
+            "days_to_std_end": days_to_std,
+            "status": status,
+            "urgency": urgency,
+        }
+    except Exception:
+        return None
+
+
+def tool_sf_get_financed_deals(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+
+    account_name   = args.get("account_name", "")
+    months_ahead   = args.get("months_ahead", 0)
+    include_past   = args.get("include_past_window", True)
+    limit          = args.get("limit", 200)
+
+    filters = ["Sale_Close_Date__c != null"]
+    if account_name:
+        filters.append(f"Account_Name__r.Name LIKE '%{account_name}%'")
+    if months_ahead:
+        cutoff = (date.today() + timedelta(days=months_ahead * 30)).strftime("%Y-%m-%d")
+        # deals closed within the past (months_ahead + 60) months are relevant
+        earliest = (date.today() - timedelta(days=(months_ahead + 60) * 30)).strftime("%Y-%m-%d")
+        filters.append(f"Sale_Close_Date__c >= {earliest}")
+
+    soql = f"""
+        SELECT Id, Name, Sale_Close_Date__c, Install_Date__c, OWU_Ship_Date__c,
+               Updated_Ship_Date__c, Warranty_Length__c, Machine_Type__c, Model__c,
+               Serial_Number__c, Status__c,
+               Account_Name__r.Name, Account_Name__c,
+               Opportunity_Name__r.Name, Opportunity_Name__c,
+               Asset__c, Asset__r.Name,
+               Sales_Rep__r.Name, Vendor__r.Name
+        FROM Project_Management__c
+        WHERE {" AND ".join(filters)}
+        ORDER BY Sale_Close_Date__c ASC
+        LIMIT {limit}
+    """
+
+    result = sf_query(tokens, soql)
+    deals = []
+    for r in result.get("records", []):
+        window = _replacement_window(r.get("Sale_Close_Date__c"))
+        if not window:
+            continue
+        if not include_past and window["status"] == "PAST_WINDOW":
+            continue
+        deals.append({
+            "id": r["Id"],
+            "name": r.get("Name"),
+            "machine_type": r.get("Machine_Type__c"),
+            "model": r.get("Model__c"),
+            "serial_number": r.get("Serial_Number__c"),
+            "status": r.get("Status__c"),
+            "close_date": r.get("Sale_Close_Date__c"),
+            "install_date": r.get("Install_Date__c"),
+            "ship_date": r.get("Updated_Ship_Date__c") or r.get("OWU_Ship_Date__c"),
+            "warranty_length": r.get("Warranty_Length__c"),
+            "account": (r.get("Account_Name__r") or {}).get("Name"),
+            "account_id": r.get("Account_Name__c"),
+            "opportunity": (r.get("Opportunity_Name__r") or {}).get("Name"),
+            "opportunity_id": r.get("Opportunity_Name__c"),
+            "asset_id": r.get("Asset__c"),
+            "asset_name": (r.get("Asset__r") or {}).get("Name"),
+            "sales_rep": (r.get("Sales_Rep__r") or {}).get("Name"),
+            "vendor": (r.get("Vendor__r") or {}).get("Name"),
+            "window": window,
+        })
+
+    critical = [d for d in deals if d["window"]["urgency"] == "CRITICAL"]
+    high     = [d for d in deals if d["window"]["urgency"] == "HIGH"]
+    medium   = [d for d in deals if d["window"]["urgency"] == "MEDIUM"]
+
+    return {
+        "deals": deals,
+        "count": len(deals),
+        "summary": {
+            "in_window_now_54_60mo": len([d for d in deals if d["window"]["status"] == "IN_WINDOW"]),
+            "past_window_60mo_plus": len([d for d in deals if d["window"]["status"] == "PAST_WINDOW"]),
+            "approaching_high": len(high),
+            "upcoming_medium": len(medium),
+            "active": len([d for d in deals if d["window"]["urgency"] == "LOW"]),
+        },
+        "lease_terms_used": f"{_EARLY_TERM}mo early / {_STD_TERM}mo standard",
+    }
+
+
 TOOL_FNS = {
     "sf_authenticate": tool_sf_authenticate,
     "sf_get_pipeline": tool_sf_get_pipeline,
@@ -1098,6 +1326,7 @@ TOOL_FNS = {
     "sf_create_task": tool_sf_create_task,
     "sf_get_open_tasks": tool_sf_get_open_tasks,
     "sf_get_completed_tasks": tool_sf_get_completed_tasks,
+    "sf_get_project_management": tool_sf_get_project_management,
     "sf_update_opportunity_notes": tool_sf_update_opportunity_notes,
     "sf_get_account_assets": tool_sf_get_account_assets,
     "sf_get_assets_expiring_soon": tool_sf_get_assets_expiring_soon,
@@ -1105,6 +1334,7 @@ TOOL_FNS = {
     "sf_get_competitor_assets": tool_sf_get_competitor_assets,
     "sf_update_asset": tool_sf_update_asset,
     "sf_get_new_assets": tool_sf_get_new_assets,
+    "sf_get_financed_deals": tool_sf_get_financed_deals,
 }
 
 

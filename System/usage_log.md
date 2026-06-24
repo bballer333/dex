@@ -9,7 +9,7 @@
 ## Core Workflows (8 features)
 
 - [x] Daily planning (`/daily-plan`)
-- [ ] Daily review (`/review` or `/daily-review`)
+- [x] Daily review (`/review` or `/daily-review`)
 - [x] Weekly planning (`/week-plan`)
 - [x] Weekly review (`/week-review`)
 - [ ] Quarterly planning (`/quarter-plan`)
@@ -108,7 +108,7 @@
 ## Tracking Metadata
 
 - **Last dex-level-up prompt:** (not yet prompted)
-- **First daily plan:** (not yet run)
+- **First daily plan:** 2026-06-22
 - **Setup date:** (set during onboarding)
 
 ---

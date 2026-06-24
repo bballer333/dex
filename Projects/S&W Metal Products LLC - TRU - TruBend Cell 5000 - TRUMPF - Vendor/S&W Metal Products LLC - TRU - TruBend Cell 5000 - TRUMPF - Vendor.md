@@ -7,17 +7,19 @@ sf_last_synced: 2026-06-19T16:22:30.037366
 # TRU - TruBend Cell 5000
 
 **Account:** [[S&W_Metal_Products_LLC|S&W Metal Products LLC]]
-**Stage:** Quoting
+**Stage:** Closed Lost
 **Amount:** $942,000.00
-**Close Date:** 2025-12-23
-**Probability:** 40%
+**Close Date:** 2026-06-22
+**Probability:** 0%
 **Owner:** Chris Barsanti
 **Lead Source:** Cold Call/Prospecting
 **Type:** —
 
 ## Next Steps
 
-10/24 â€“ Call to check in and schedule meeting to review trade in and TruBend Cell project update
+~~10/24 — Call to check in and schedule meeting to review trade in and TruBend Cell project update~~
+
+**2026-06-22 — Closed Lost.** Opportunity is dead.
 
 ## Key Contacts
 
