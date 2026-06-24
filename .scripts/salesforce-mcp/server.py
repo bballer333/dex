@@ -444,6 +444,21 @@ TOOLS = [
         },
     },
     {
+        "name": "sf_create_quote",
+        "description": "Create a new Quote in Salesforce linked to an opportunity. Pre-fills vendor and machine model from the opportunity when available. Returns the new Quote Id and QuoteNumber.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "opportunity_id": {"type": "string", "description": "Salesforce Opportunity Id to link the quote to"},
+                "name": {"type": "string", "description": "Quote name. Defaults to the opportunity name if not provided."},
+                "expiration_date": {"type": "string", "description": "Quote expiration date in YYYY-MM-DD format. Defaults to 30 days from today."},
+                "description": {"type": "string", "description": "Quote description or notes (optional)"},
+                "status": {"type": "string", "description": "Quote status (e.g. 'Draft', 'In Review', 'Approved'). Defaults to 'Draft'."},
+            },
+            "required": ["opportunity_id"],
+        },
+    },
+    {
         "name": "sf_get_vendors",
         "description": "Get all Vendor accounts from Salesforce (Record Type = Vendor). Use to present a vendor picklist when creating opportunities. Returns Id and Name for each vendor.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -471,6 +486,7 @@ TOOLS = [
                 "description": {"type": "string", "description": "Opportunity description or notes (optional)"},
                 "next_step": {"type": "string", "description": "Next steps text (optional)"},
                 "type": {"type": "string", "description": "Opportunity type (optional, e.g. 'New Business', 'Existing Business')"},
+                "machine_type": {"type": "string", "description": "Machine type/category (e.g. 'Band Saw', 'Laser', 'Press Brake'). Saved to Machine_Type__c on the opportunity for pipeline filtering."},
                 "skip_follow_up_task": {"type": "boolean", "description": "Set true to skip auto-creating a Discovery Call follow-up task (default false — task is created automatically)"},
                 "force_create": {"type": "boolean", "description": "Set true to create even if a duplicate open opportunity with the same name exists on this account (default false)"},
             },
@@ -1347,13 +1363,50 @@ def tool_sf_get_financed_deals(args):
     }
 
 
+def tool_sf_create_quote(args):
+    tokens = get_valid_tokens()
+    if not tokens:
+        return {"error": "Not authenticated. Run sf_authenticate first."}
+    opp_id = args["opportunity_id"]
+    # Fetch opportunity name to use as default quote name
+    opp_records = sf_query(tokens, f"SELECT Name FROM Opportunity WHERE Id = '{opp_id}' LIMIT 1").get("records", [])
+    if not opp_records:
+        return {"error": f"Opportunity not found for id '{opp_id}'."}
+    opp_name = opp_records[0]["Name"]
+    default_expiry = (date.today() + timedelta(days=30)).isoformat()
+    payload = {
+        "OpportunityId": opp_id,
+        "Name": args.get("name") or opp_name,
+        "Status": args.get("status", "Draft"),
+        "ExpirationDate": args.get("expiration_date", default_expiry),
+    }
+    if args.get("description"):
+        payload["Description"] = args["description"]
+    result = sf_post(tokens, "sobjects/Quote", payload)
+    quote_id = result.get("id")
+    if not quote_id:
+        return {"success": False, "errors": result.get("errors", []), "raw": result}
+    # Fetch the assigned QuoteNumber
+    quote_records = sf_query(tokens, f"SELECT QuoteNumber FROM Quote WHERE Id = '{quote_id}' LIMIT 1").get("records", [])
+    quote_number = quote_records[0].get("QuoteNumber") if quote_records else None
+    return {
+        "success": True,
+        "quote_id": quote_id,
+        "quote_number": quote_number,
+        "quote_name": payload["Name"],
+        "opportunity_id": opp_id,
+        "expiration_date": payload["ExpirationDate"],
+        "status": payload["Status"],
+    }
+
+
 def tool_sf_get_vendors(args):
     tokens = get_valid_tokens()
     if not tokens:
         return {"error": "Not authenticated. Run sf_authenticate first."}
     soql = "SELECT Id, Name FROM Account WHERE RecordType.Name = 'Vendor' ORDER BY Name ASC LIMIT 200"
     result = sf_query(tokens, soql)
-    vendors = [{"id": r["Id"], "name": r["Name"]} for r in result.get("records", [])]
+    vendors = [{"id": r["Id"], "name": r["Name"], "prefix": r["Name"][:3].upper()} for r in result.get("records", [])]
     return {"vendors": vendors, "count": len(vendors)}
 
 
@@ -1375,12 +1428,11 @@ def tool_sf_create_opportunity(args):
         vendor_records = sf_query(tokens, f"SELECT Name FROM Account WHERE Id = '{vendor_id}' LIMIT 1").get("records", [])
         if not vendor_records:
             return {"error": f"Vendor not found for id '{vendor_id}'. Run sf_get_vendors to get valid vendor IDs."}
-        vendor_name = vendor_records[0]["Name"]
+        vendor_prefix = vendor_records[0]["Name"][:3].upper()
         acct_records = sf_query(tokens, f"SELECT Name FROM Account WHERE Id = '{account_id}' LIMIT 1").get("records", [])
         if not acct_records:
             return {"error": f"Account not found for id '{account_id}'."}
         account_name = acct_records[0]["Name"]
-        vendor_prefix = vendor_name[:3].upper()
         opp_name = f"{vendor_prefix} - {machine_model} - {account_name}"
 
     # Duplicate detection — check for open opp with same name on this account
@@ -1408,6 +1460,8 @@ def tool_sf_create_opportunity(args):
     }
     if vendor_id:
         payload["Vendor__c"] = vendor_id
+    if args.get("machine_type"):
+        payload["Machine_Type__c"] = args["machine_type"]
     if args.get("amount") is not None:
         payload["Amount"] = args["amount"]
     if args.get("description"):
@@ -1491,6 +1545,7 @@ TOOL_FNS = {
     "sf_update_asset": tool_sf_update_asset,
     "sf_get_new_assets": tool_sf_get_new_assets,
     "sf_get_financed_deals": tool_sf_get_financed_deals,
+    "sf_create_quote": tool_sf_create_quote,
     "sf_get_vendors": tool_sf_get_vendors,
     "sf_create_opportunity": tool_sf_create_opportunity,
 }
