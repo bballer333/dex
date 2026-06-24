@@ -7,8 +7,9 @@ Downloads saved queries from online.edadata.com in bulk, caches locally,
 and lets you filter/search without hitting the site again.
 
 Usage:
-    python3 eda-scraper.py --download                                    # Download all saved queries
+    python3 eda-scraper.py --download                                    # Download All Data - 10YR (default)
     python3 eda-scraper.py --download --query "CB Accounts - Press Brakes"  # One specific query
+    python3 eda-scraper.py --download --all-queries                      # Download all 32 saved queries
     python3 eda-scraper.py --search "Keystone Fab"                       # Search cached data
     python3 eda-scraper.py --search "Keystone" --field buycomp1          # Search specific field
     python3 eda-scraper.py --sync                                         # Sync EDA cache → Salesforce Assets
@@ -699,7 +700,7 @@ def build_asset_payload(eda_rec, account_id, our_brands):
 
 # ── Commands ───────────────────────────────────────────────────────────────────
 
-def cmd_download(session, query_filter=None, headed=False, debug=False):
+def cmd_download(session, query_filter=None, all_queries=False, headed=False, debug=False):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -712,12 +713,17 @@ def cmd_download(session, query_filter=None, headed=False, debug=False):
         print("ERROR: openpyxl not installed (needed to parse Excel exports). Run: pip install openpyxl")
         sys.exit(1)
 
-    queries = KNOWN_SAVED_QUERIES
+    # Default to the full 10-year dataset — it's a superset of all CB Accounts queries.
+    # Pass --query to override, or --all-queries to download every saved query.
     if query_filter:
-        queries = [q for q in queries if query_filter.lower() in q.lower()]
+        queries = [q for q in KNOWN_SAVED_QUERIES if query_filter.lower() in q.lower()]
         if not queries:
             print(f"No saved queries match '{query_filter}'. Run --list-queries to see options.")
             return
+    elif all_queries:
+        queries = KNOWN_SAVED_QUERIES
+    else:
+        queries = ["All Data - 10YR"]
 
     print(f"Downloading {len(queries)} saved quer{'y' if len(queries)==1 else 'ies'}...", file=sys.stderr)
     if debug:
@@ -1328,8 +1334,9 @@ def cmd_sync(account_filter=None, dry_run=False):
 
 def main():
     parser = argparse.ArgumentParser(description="EDA Data scraper — download all, filter locally")
-    parser.add_argument("--download",       action="store_true", help="Download saved query results to local cache")
-    parser.add_argument("--query",          type=str, default="", help="Filter which saved query to download (partial name match)")
+    parser.add_argument("--download",       action="store_true", help="Download 'All Data - 10YR' to local cache (default query)")
+    parser.add_argument("--query",          type=str, default="", help="Download a specific saved query by name (partial match)")
+    parser.add_argument("--all-queries",    action="store_true", help="Download all 32 saved queries instead of just All Data - 10YR")
     parser.add_argument("--search",         type=str, default="", help="Search cached data by any field value")
     parser.add_argument("--field",          type=str, default="", help="Restrict --search to a specific field name")
     parser.add_argument("--profile",        type=str, default="", help="Generate customer intelligence profile from local cache")
@@ -1372,7 +1379,8 @@ def main():
             sys.exit(1)
 
     if args.download:
-        cmd_download(session, query_filter=args.query or None, headed=args.headed, debug=args.debug)
+        cmd_download(session, query_filter=args.query or None, all_queries=args.all_queries,
+                     headed=args.headed, debug=args.debug)
     else:
         parser.print_help()
 
