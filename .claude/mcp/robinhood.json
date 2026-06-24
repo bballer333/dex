@@ -1,0 +1,12 @@
+{
+  "name": "robinhood",
+  "description": "Robinhood portfolio data — positions, equity, quotes, orders, dividends",
+  "server": {
+    "command": "python",
+    "args": ["core/mcp/robinhood_server.py"],
+    "env": {
+      "VAULT_PATH": "${workspaceFolder}"
+    }
+  },
+  "notes": "Uses the robin_stocks library (unofficial Robinhood API). Requires ROBINHOOD_USERNAME and ROBINHOOD_PASSWORD in VAULT_ROOT/.env — set up with /robinhood-setup. Install dependency: pip install robin_stocks"
+}

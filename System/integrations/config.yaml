@@ -9,6 +9,7 @@ enabled:
   notion: false
   slack: true
   google: false
+  robinhood: false
 
 # Integration-specific settings are stored in separate files:
 # - notion.yaml (Notion-specific config)
