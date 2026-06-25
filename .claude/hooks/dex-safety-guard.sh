@@ -5,8 +5,16 @@
 
 INPUT=$(cat)
 
+# Use venv Python if available (Windows-compatible), fall back to python3/python
+_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_VAULT_DIR="$(cd "$_SCRIPT_DIR/../.." && pwd)"
+PYTHON="$_VAULT_DIR/.venv/Scripts/python.exe"
+if [[ ! -x "$PYTHON" ]]; then
+    PYTHON=$(which python3 2>/dev/null || which python 2>/dev/null || echo "python3")
+fi
+
 # Extract tool name and command from input
-TOOL_NAME=$(echo "$INPUT" | python3 -c "
+TOOL_NAME=$(echo "$INPUT" | "$PYTHON" -c "
 import sys, json
 try:
     data = json.loads(sys.stdin.read())
@@ -15,7 +23,7 @@ except:
     print('')
 " 2>/dev/null)
 
-COMMAND=$(echo "$INPUT" | python3 -c "
+COMMAND=$(echo "$INPUT" | "$PYTHON" -c "
 import sys, json
 try:
     data = json.loads(sys.stdin.read())

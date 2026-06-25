@@ -16,13 +16,19 @@ echo "$NOW" > "$DEDUP_FILE"
 
 CLAUDE_DIR="$CLAUDE_PROJECT_DIR"
 PILLARS_FILE="$CLAUDE_DIR/System/pillars.yaml"
-QUARTER_GOALS="$CLAUDE_DIR/01-Quarter_Goals/Quarter_Goals.md"
-WEEK_PRIORITIES="$CLAUDE_DIR/02-Week_Priorities/Week_Priorities.md"
-TASKS_FILE="$CLAUDE_DIR/03-Tasks/Tasks.md"
-LEARNINGS_DIR="$CLAUDE_DIR/06-Resources/Learnings"
+QUARTER_GOALS="$CLAUDE_DIR/Planning/Quarter_Goals.md"
+WEEK_PRIORITIES="$CLAUDE_DIR/Planning/Week_Priorities.md"
+TASKS_FILE="$CLAUDE_DIR/Planning/Tasks.md"
+LEARNINGS_DIR="$CLAUDE_DIR/Archive/Learnings"
 MISTAKES_FILE="$LEARNINGS_DIR/Mistake_Patterns.md"
 PREFERENCES_FILE="$LEARNINGS_DIR/Working_Preferences.md"
 ONBOARDING_MARKER="$CLAUDE_DIR/System/.onboarding-complete"
+
+# Use venv Python if available (Windows-compatible), fall back to python3/python
+PYTHON="$CLAUDE_DIR/.venv/Scripts/python.exe"
+if [[ ! -x "$PYTHON" ]]; then
+    PYTHON=$(which python3 2>/dev/null || which python 2>/dev/null || echo "python3")
+fi
 
 echo "=== Dex Session Context ==="
 echo ""
@@ -32,9 +38,9 @@ echo ""
 # Demo Mode Check
 DEMO_STATE="$CLAUDE_DIR/System/.demo-mode-state.json"
 if [[ -f "$DEMO_STATE" ]]; then
-    DEMO_ACTIVE=$(python3 -c "import json; d=json.load(open('$DEMO_STATE')); print(d.get('active', False))" 2>/dev/null)
+    DEMO_ACTIVE=$("$PYTHON" -c "import json; d=json.load(open('$DEMO_STATE')); print(d.get('active', False))" 2>/dev/null)
     if [[ "$DEMO_ACTIVE" == "True" ]]; then
-        TERM_COUNT=$(python3 -c "
+        TERM_COUNT=$("$PYTHON" -c "
 import sys; sys.path.insert(0, '$CLAUDE_DIR')
 from importlib import import_module
 m = import_module('dex-core.core.mcp.demo_mode_server')
@@ -248,7 +254,7 @@ fi
 ERROR_QUEUE="$CLAUDE_DIR/.logs/error-queue.json"
 if [[ -f "$ERROR_QUEUE" ]]; then
     # Count unacknowledged errors using python (available on macOS)
-    UNACK_COUNT=$(python3 -c "
+    UNACK_COUNT=$("$PYTHON" -c "
 import json
 try:
     with open('$ERROR_QUEUE') as f:
@@ -262,7 +268,7 @@ except:
     if [[ "$UNACK_COUNT" -gt 0 ]]; then
         echo "--- ⚠️ Recent Errors ($UNACK_COUNT) ---"
         # Show the most recent 3 unacknowledged errors
-        python3 -c "
+        "$PYTHON" -c "
 import json
 with open('$ERROR_QUEUE') as f:
     q = json.load(f)
@@ -287,7 +293,7 @@ fi
 if [[ -f "$ONBOARDING_MARKER" ]]; then
     DEX_CORE_DIR="$CLAUDE_DIR/dex-core"
     if [[ -f "$DEX_CORE_DIR/core/utils/preflight.py" ]]; then
-        HEALTH_OUTPUT=$(cd "$DEX_CORE_DIR" && python3 -c "
+        HEALTH_OUTPUT=$(cd "$DEX_CORE_DIR" && "$PYTHON" -c "
 import sys
 sys.path.insert(0, '.')
 from core.utils.preflight import run_preflight, format_output, format_errors

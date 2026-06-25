@@ -43,7 +43,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "afplay /System/Library/Sounds/Ping.aiff"
+            "command": "powershell -Command \"[console]::beep(1000,300)\"",
+            "shell": "powershell"
           }
         ]
       }
@@ -54,7 +55,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "afplay /System/Library/Sounds/Ping.aiff"
+            "command": "powershell -Command \"[console]::beep(1000,300)\"",
+            "shell": "powershell"
           }
         ]
       }
