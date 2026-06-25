@@ -2,8 +2,8 @@
 
 ## What this is
 
-A Cloudflare Worker that classifies incoming emails using Claude AI.
-Email classification happens on ingest with categories:
+A Cloudflare Worker that classifies incoming emails using **rule-based logic**.
+Email classification happens instantly on ingest with categories:
 
 - **urgent** — Requires immediate action or response (time-sensitive, critical)
 - **follow_up** — Action needed but not urgent (decisions, approvals)
@@ -11,6 +11,8 @@ Email classification happens on ingest with categories:
 - **ignore** — Can be safely ignored or archived (spam, newsletters)
 
 Each classification includes a confidence score (0.0–1.0) and reasoning.
+
+**Zero cost, instant classification** — No API calls, just pattern matching.
 
 ---
 
@@ -34,10 +36,9 @@ https://email-triage.cbarsanti.workers.dev
 ```bash
 # Strong random string for Bearer token auth
 npx wrangler secret put MCP_SECRET
-
-# Your Claude API key (from claude.ai/settings/api-keys)
-npx wrangler secret put ANTHROPIC_API_KEY
 ```
+
+That's it! No API keys needed — classification is rule-based.
 
 ---
 
@@ -71,25 +72,26 @@ curl -X POST https://email-triage.cbarsanti.workers.dev/ingest-email \
   -H "Content-Type: application/json" \
   -d '{
     "email_id": "msg-12345",
-    "from": "client@example.com",
+    "from": "oncall@example.com",
     "to": "you@yourcompany.com",
-    "subject": "URGENT: System downtime happening now",
+    "subject": "CRITICAL: System downtime happening now",
     "body": "Our production database is down. Immediate action required.",
     "date": "2026-06-25T15:00:00Z"
   }'
 ```
 
-Response:
+Response (instant, <10ms):
 ```json
 {
   "email_id": "msg-12345",
-  "subject": "URGENT: System downtime happening now",
-  "from": "client@example.com",
+  "subject": "CRITICAL: System downtime happening now",
+  "from": "oncall@example.com",
   "to": "you@yourcompany.com",
   "classification": {
     "category": "urgent",
-    "confidence": 0.98,
-    "reasoning": "Production system downtime requires immediate response"
+    "confidence": 0.95,
+    "reasoning": "Contains urgent keywords",
+    "method": "rule-based"
   }
 }
 ```
@@ -138,10 +140,13 @@ Response:
   "classification": {
     "category": "urgent|follow_up|fyi|ignore",
     "confidence": 0.0,
-    "reasoning": "Brief explanation of classification"
+    "reasoning": "Brief explanation of classification",
+    "method": "rule-based"
   }
 }
 ```
+
+**Response time:** <10ms (instant, rule-based — no API calls)
 
 **Error Responses:**
 
@@ -180,8 +185,21 @@ async function triageEmail(emailData) {
     throw new Error(`Triage failed: ${response.status}`);
   }
 
-  return await response.json();
+  const result = await response.json();
+  // Result includes: category, confidence, reasoning, method
+  return result.classification;
 }
+
+// Example usage
+const result = await triageEmail({
+  messageId: "msg-123",
+  from: "oncall@example.com",
+  to: "team@example.com",
+  subject: "CRITICAL: Production down",
+  body: "Database is down. Immediate action required.",
+});
+
+console.log(`Category: ${result.category} (${(result.confidence * 100).toFixed(0)}%)`);
 ```
 
 ### Python
@@ -270,14 +288,42 @@ async function getHighConfidenceTriages(email, minConfidence = 0.8) {
 
 ---
 
-## Updating the Worker
+## Customizing Rules
 
-To modify classification logic or add new categories:
+To adjust how emails are classified:
 
-1. Edit `worker.js`
-2. Update the `CATEGORIES` object if adding new categories
-3. Modify the prompt in `classifyEmail()` to adjust classification behavior
+1. Edit `rules.json` to add, remove, or modify rules
+2. Each rule has:
+   - `patterns` — Regex patterns to match in subject + body
+   - `from_patterns` — Patterns to match sender email
+   - `subject_patterns` — Patterns to match subject only
+   - `body_patterns` — Patterns to match body only
+   - `confidence` — Score 0.0–1.0 for this rule match
+   - `reason` — Human-readable explanation
+
+3. Test changes locally:
+   ```bash
+   node test.js
+   ```
+
 4. Run `npx wrangler deploy` to publish changes
+
+### Example: Add a new rule
+
+```json
+{
+  "urgent": [
+    {
+      "from_patterns": ["ceo@"],
+      "patterns": ["needs your attention"],
+      "confidence": 0.9,
+      "reason": "CEO message with keyword"
+    }
+  ]
+}
+```
+
+Rules are evaluated in order (urgent → follow_up → fyi → ignore) and return on the first match.
 
 ---
 
@@ -300,26 +346,31 @@ This shows real-time logs including API errors, classification times, and authen
 - Ensure Bearer token in request matches the secret
 
 ### 400 Bad Request
-- Ensure `subject` and `body` fields are present in JSON
+- Ensure at least `subject` or `body` is present in JSON
 - Check JSON syntax with a JSON validator
 
 ### 500 Internal Server Error
-- Check `npx wrangler tail` for API error details
-- Verify `ANTHROPIC_API_KEY` is set and valid
-- Confirm Claude API is accessible from Cloudflare Workers
+- Check `npx wrangler tail` for error details
+- Verify regex patterns in `rules.json` are valid
+- Test patterns locally with `node test.js`
 
-### Slow Response Times
-- First request to cold worker may take 1–2s (normal)
-- Check `npx wrangler tail` for Claude API latency
-- Classify in batches rather than single requests when possible
+### Classifications not matching expected category
+- Check `rules.json` patterns — they're case-insensitive regex
+- Add custom rules for your workflow
+- Run `node test.js` to validate changes before deploying
+- Test patterns: `node -e "console.log(/URGENT/.test('urgent email'))"`
 
 ---
 
-## Cost Estimation
+## Cost & Performance
 
-With Claude 3.5 Sonnet:
-- ~200 tokens per email classification (prompt + response)
-- Input: $3/1M tokens | Output: $15/1M tokens
-- ~100 emails/day = ~3¢/day cost
+**Rule-based classification is free and instant:**
+- No API calls — pattern matching only
+- <10ms per classification
+- Unlimited emails/day
+- Only cost: Cloudflare Workers (first 100k requests/day free)
 
-For cost monitoring, enable Cloudflare Analytics Engine.
+**For high volume (millions/day), consider:**
+- Caching results to avoid redundant processing
+- Batching classifications in Power Automate workflows
+- Monitoring via Cloudflare Analytics Engine

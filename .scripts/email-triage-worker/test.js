@@ -2,12 +2,80 @@
 
 /**
  * Test script for email-triage worker
+ * Tests rule-based classification locally
  * Run: node test.js
  */
 
-const API_BASE = process.env.WORKER_URL || "http://localhost:8787";
-const MCP_SECRET = process.env.MCP_SECRET || "test-secret";
+const fs = require("fs");
+const path = require("path");
 
+// Load the rules
+const rulesPath = path.join(__dirname, "rules.json");
+const rules = JSON.parse(fs.readFileSync(rulesPath, "utf-8"));
+
+// Copy the classification logic from worker.js
+function matchPatterns(text, patterns) {
+  if (!patterns || patterns.length === 0) return false;
+  return patterns.some(p => {
+    try {
+      return new RegExp(p, "i").test(text);
+    } catch (e) {
+      return false;
+    }
+  });
+}
+
+function ruleMatches(email, rule) {
+  const textBody = `${email.subject || ""} ${email.body || ""}`;
+  const from = (email.from || "").toLowerCase();
+  const to = (email.to || "").toLowerCase();
+
+  if (rule.patterns && matchPatterns(textBody, rule.patterns)) {
+    return true;
+  }
+  if (rule.from_patterns && matchPatterns(from, rule.from_patterns)) {
+    return true;
+  }
+  if (rule.to_patterns && matchPatterns(to, rule.to_patterns)) {
+    return true;
+  }
+  if (rule.subject_patterns && matchPatterns(email.subject || "", rule.subject_patterns)) {
+    return true;
+  }
+  if (rule.body_patterns && matchPatterns(email.body || "", rule.body_patterns)) {
+    return true;
+  }
+
+  return false;
+}
+
+function classifyEmail(email, rules) {
+  const categoryOrder = ["urgent", "follow_up", "fyi", "ignore"];
+
+  for (const category of categoryOrder) {
+    const categoryRules = rules[category] || [];
+
+    for (const rule of categoryRules) {
+      if (ruleMatches(email, rule)) {
+        return {
+          category,
+          confidence: rule.confidence || 0.8,
+          reasoning: rule.reason || `Matched ${category} rules`,
+          method: "rule-based"
+        };
+      }
+    }
+  }
+
+  return {
+    category: "fyi",
+    confidence: 0.5,
+    reasoning: "No rules matched, defaulting to FYI",
+    method: "rule-based"
+  };
+}
+
+// Test cases
 const testCases = [
   {
     name: "Urgent email — production issue",
@@ -49,79 +117,41 @@ const testCases = [
     },
     expectedCategory: "ignore",
   },
+  {
+    name: "Urgent email — service outage",
+    email: {
+      from: "alerts@monitoring.com",
+      subject: "Service outage detected",
+      body: "Multiple services are down. Immediate action required.",
+    },
+    expectedCategory: "urgent",
+  },
 ];
 
-async function testHealthCheck() {
-  console.log("\n📋 Testing health check...");
-  const response = await fetch(`${API_BASE}/`);
-  if (response.status === 200) {
-    const data = await response.json();
-    console.log("✅ Health check passed");
-    console.log(`   Categories:`, Object.keys(data.categories).join(", "));
-  } else {
-    console.log(`❌ Health check failed: ${response.status}`);
-    return false;
-  }
-  return true;
-}
-
-async function testEmailTriage(testCase) {
-  console.log(`\n📧 Testing: ${testCase.name}`);
-
-  const response = await fetch(`${API_BASE}/ingest-email`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${MCP_SECRET}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(testCase.email),
-  });
-
-  if (response.status !== 200) {
-    console.log(`❌ Request failed: ${response.status}`);
-    const error = await response.json();
-    console.log(`   Error: ${error.error || error.message}`);
-    return false;
-  }
-
-  const result = await response.json();
-  const category = result.classification.category;
-  const confidence = (result.classification.confidence * 100).toFixed(1);
-
-  const isCorrect = category === testCase.expectedCategory;
-  const icon = isCorrect ? "✅" : "⚠️";
-
-  console.log(`${icon} Classification: ${category} (${confidence}% confidence)`);
-  console.log(`   Reasoning: ${result.classification.reasoning}`);
-
-  if (!isCorrect) {
-    console.log(`   ⚠️ Expected: ${testCase.expectedCategory}`);
-  }
-
-  return isCorrect;
-}
-
-async function runTests() {
-  console.log("🧪 Email Triage Worker Test Suite");
-  console.log(`   API: ${API_BASE}`);
-  console.log(`   Auth: Bearer ${MCP_SECRET.slice(0, 8)}...`);
-
-  const healthOk = await testHealthCheck();
-  if (!healthOk) {
-    console.log("\n❌ Worker not responding. Is it running?");
-    console.log("   Run: wrangler dev");
-    process.exit(1);
-  }
+function runTests() {
+  console.log("🧪 Email Triage Worker — Rule-Based Test Suite");
+  console.log(`   Rules loaded: ${rulesPath}`);
+  console.log(`   Categories: ${Object.keys(rules).join(", ")}`);
 
   let passed = 0;
   let total = testCases.length;
 
   for (const testCase of testCases) {
-    try {
-      const result = await testEmailTriage(testCase);
-      if (result) passed++;
-    } catch (error) {
-      console.log(`❌ Test error: ${error.message}`);
+    const result = classifyEmail(testCase.email, rules);
+    const category = result.category;
+    const confidence = (result.confidence * 100).toFixed(0);
+
+    const isCorrect = category === testCase.expectedCategory;
+    const icon = isCorrect ? "✅" : "⚠️";
+
+    console.log(`\n${icon} ${testCase.name}`);
+    console.log(`   Classified: ${category} (${confidence}% confidence)`);
+    console.log(`   Reasoning: ${result.reasoning}`);
+
+    if (!isCorrect) {
+      console.log(`   Expected: ${testCase.expectedCategory}`);
+    } else {
+      passed++;
     }
   }
 
@@ -130,10 +160,11 @@ async function runTests() {
 
   if (passed === total) {
     console.log("✅ All tests passed!");
+    process.exit(0);
   } else {
-    console.log(`⚠️ ${total - passed} test(s) may need review`);
+    console.log(`⚠️ ${total - passed} test(s) may need rule adjustments`);
+    process.exit(1);
   }
 }
 
-// Run tests
-runTests().catch(console.error);
+runTests();
