@@ -243,6 +243,27 @@ def sf_search(tokens, query):
         return json.loads(resp.read())
 
 
+# ── Machine Type picklist ─────────────────────────────────────────────────────
+
+OPP_MACHINE_TYPES = {
+    "Additive", "Angle Line", "Bandsaw", "Beam Process Drill", "Beam Process Saw",
+    "Bus Bar Equipment", "Coil Feeding", "Cold Saw", "Control Retrofit",
+    "Coordinate Measure Machine", "Cut To Length", "Deburring Machine", "Dust Collector",
+    "Folder", "Folder (CNC)", "Gantry", "Gauging System", "Grinder (Belt)",
+    "Handheld Power Tool", "Insertion Machine", "Ironworker", "Laser", "Laser (Tube)",
+    "Laser Punch Press", "Lathe (CNC)", "Lathe (Manual)", "Layout System", "Leveler",
+    "Material Lift", "Mill (CNC)", "Mill (Manual)", "Nitrogen Generator", "Notcher",
+    "Other", "Painting Line", "Panel Bender", "Plasma (CNC)",
+    "Plasma (Combo - Plasma/Drill)", "Plasma (Robot)", "Plasma (Tube Cutter)",
+    "Press Brake", "Punch", "Robot (Tending)", "Roll Forming", "Rolls (Angle)",
+    "Rolls (Plate)", "Router", "Saw (NEC)", "Shear", "Shot Blast Equipment",
+    "Software", "Stamping Press", "Storage System", "Tooling", "Tube/Pipe Bender",
+    "Universal Machining Center (5+ Axis)", "Vacuum Pump",
+    "Vertical Machining Center (3-4 Axis)", "Vertical Machining Center (5+ Axis)",
+    "Waterjet", "Welder (Manual)", "Welder (Robot)",
+}
+
+
 # ── Business day helper ───────────────────────────────────────────────────────
 
 def _us_federal_holidays(year):
@@ -735,6 +756,7 @@ TOOLS = [
                 "contact_id": {"type": "string", "description": "Salesforce Contact Id to link as primary contact role (optional)"},
                 "description": {"type": "string", "description": "Opportunity description or notes (optional)"},
                 "next_step": {"type": "string", "description": "Next steps text (optional)"},
+                "machine_type": {"type": "string", "description": "Machine type — must match a picklist value exactly (e.g. 'Cold Saw', 'Bandsaw', 'Laser', 'Press Brake'). Saved to Opp_Machine_Type__c. Valid values: Additive, Angle Line, Bandsaw, Beam Process Drill, Beam Process Saw, Bus Bar Equipment, Coil Feeding, Cold Saw, Control Retrofit, Coordinate Measure Machine, Cut To Length, Deburring Machine, Dust Collector, Folder, Folder (CNC), Gantry, Gauging System, Grinder (Belt), Handheld Power Tool, Insertion Machine, Ironworker, Laser, Laser (Tube), Laser Punch Press, Lathe (CNC), Lathe (Manual), Layout System, Leveler, Material Lift, Mill (CNC), Mill (Manual), Nitrogen Generator, Notcher, Other, Painting Line, Panel Bender, Plasma (CNC), Plasma (Combo - Plasma/Drill), Plasma (Robot), Plasma (Tube Cutter), Press Brake, Punch, Robot (Tending), Roll Forming, Rolls (Angle), Rolls (Plate), Router, Saw (NEC), Shear, Shot Blast Equipment, Software, Stamping Press, Storage System, Tooling, Tube/Pipe Bender, Universal Machining Center (5+ Axis), Vacuum Pump, Vertical Machining Center (3-4 Axis), Vertical Machining Center (5+ Axis), Waterjet, Welder (Manual), Welder (Robot)"},
                 "type": {"type": "string", "description": "Opportunity type (optional, e.g. 'New Business', 'Existing Business')"},
                 "skip_follow_up_task": {"type": "boolean", "description": "Set true to skip auto-creating a Discovery Call follow-up task (default false)"},
                 "force_create": {"type": "boolean", "description": "Set true to create even if a duplicate open opportunity with the same name exists (default false)"},
@@ -757,6 +779,7 @@ TOOLS = [
                 "account_name": {"type": "string", "description": "Account/company name (partial match OK)"},
                 "vendor_name": {"type": "string", "description": "Vendor name (partial match — e.g. 'HEM', 'Trumpf')"},
                 "machine_model": {"type": "string", "description": "Machine model (e.g. 'HEM Saw VT120')"},
+                "machine_type": {"type": "string", "description": "Machine type — must match a picklist value exactly (e.g. 'Cold Saw', 'Bandsaw', 'Laser'). Saved to Opp_Machine_Type__c. Same valid values as sf_create_opportunity."},
                 "contact_name": {"type": "string", "description": "Primary contact name (partial match, optional)"},
                 "amount": {"type": "number", "description": "Estimated deal amount (optional)"},
                 "stage": {"type": "string", "description": "Opportunity stage (defaults to 'Discovery')"},
@@ -2221,6 +2244,12 @@ def tool_sf_create_opportunity(args):
     }
     if vendor_id:
         payload["Vendor__c"] = vendor_id
+    if args.get("machine_type"):
+        mt = args["machine_type"]
+        if mt not in OPP_MACHINE_TYPES:
+            close = sorted(OPP_MACHINE_TYPES, key=lambda v: sum(c in v.lower() for c in mt.lower()), reverse=True)[:5]
+            return {"error": f"'{mt}' is not a valid Machine Type. Did you mean one of: {close}? See tool description for full list."}
+        payload["Opp_Machine_Type__c"] = mt
     if args.get("amount") is not None:
         payload["Amount"] = args["amount"]
     if args.get("description"):
@@ -2343,6 +2372,12 @@ def tool_sf_new_deal(args):
         "StageName": args.get("stage", "Discovery"),
         "CloseDate": args.get("close_date", default_close),
     }
+    if args.get("machine_type"):
+        mt = args["machine_type"]
+        if mt not in OPP_MACHINE_TYPES:
+            close = sorted(OPP_MACHINE_TYPES, key=lambda v: sum(c in v.lower() for c in mt.lower()), reverse=True)[:5]
+            return {"error": f"'{mt}' is not a valid Machine Type. Did you mean one of: {close}? See tool description for full list."}
+        opp_payload["Opp_Machine_Type__c"] = mt
     if args.get("amount") is not None:
         opp_payload["Amount"] = args["amount"]
     if args.get("notes"):
