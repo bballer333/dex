@@ -65,7 +65,7 @@ class TestSetupMcpConfig:
         servers = json.loads(target.read_text())["mcpServers"]
         # Clean server survives with the real path substituted in.
         assert "clean" in servers
-        assert servers["clean"]["env"]["VAULT_PATH"] == "/tmp/test-vault"
+        assert servers["clean"]["env"]["VAULT_PATH"] == Path("/tmp/test-vault").as_posix()
         assert "{{VAULT_PATH}}" not in json.dumps(servers["clean"])
         # Server with an unresolved credential placeholder is dropped.
         assert "needs_api_key" not in servers

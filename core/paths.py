@@ -84,6 +84,11 @@ COMMITMENT_QUEUE_FILE = SYSTEM_DIR / 'commitment_queue.json'
 OBSIDIAN_SYNC_LOG = SYSTEM_DIR / 'obsidian-sync.log'
 RITUAL_INTELLIGENCE_DB_FILE = DEX_RUNTIME_DIR / 'ritual-intelligence.db'
 
+# --- Legacy aliases (pre-Obsidian-migration path names) ---
+RESOURCES_DIR = SYSTEM_DIR                               # was VAULT_ROOT / '06-Resources'
+TRACKED_MEETINGS_DIR = MEETING_INTEL_DIR                 # was AREAS_DIR / 'Meetings'
+MEETING_DAILY_LOGS_DIR = MEETING_INTEL_DIR / 'Daily_Log' # was TRACKED_MEETINGS_DIR / 'Daily_Log'
+
 
 def export_json(output_path: str | Path | None = None) -> dict:
     """Export all paths as a JSON-serializable dict (strings).

@@ -54,20 +54,23 @@ class TestDirectoryConstants:
 class TestDerivedPaths:
     """Verify parent relationships between derived paths."""
 
-    def test_people_dir_parent_is_areas(self):
-        assert paths.PEOPLE_DIR.parent == paths.AREAS_DIR
+    def test_people_dir_parent_is_vault_root(self):
+        # Post-Obsidian migration: People/ is a top-level PARA folder
+        assert paths.PEOPLE_DIR.parent == paths.VAULT_ROOT
 
-    def test_companies_dir_parent_is_areas(self):
-        assert paths.COMPANIES_DIR.parent == paths.AREAS_DIR
+    def test_companies_dir_parent_is_people(self):
+        assert paths.COMPANIES_DIR.parent == paths.PEOPLE_DIR
 
-    def test_career_dir_parent_is_areas(self):
-        assert paths.CAREER_DIR.parent == paths.AREAS_DIR
+    def test_career_dir_parent_is_vault_root(self):
+        # Post-Obsidian migration: Career/ is a top-level PARA folder
+        assert paths.CAREER_DIR.parent == paths.VAULT_ROOT
 
     def test_meetings_dir_parent_is_inbox(self):
         assert paths.MEETINGS_DIR.parent == paths.INBOX_DIR
 
-    def test_tracked_meetings_dir_parent_is_areas(self):
-        assert paths.TRACKED_MEETINGS_DIR.parent == paths.AREAS_DIR
+    def test_tracked_meetings_dir_parent_is_intel(self):
+        # TRACKED_MEETINGS_DIR is a legacy alias for MEETING_INTEL_DIR
+        assert paths.TRACKED_MEETINGS_DIR.parent == paths.INTEL_DIR
 
     def test_meeting_daily_logs_dir_parent_is_tracked_meetings(self):
         assert paths.MEETING_DAILY_LOGS_DIR.parent == paths.TRACKED_MEETINGS_DIR

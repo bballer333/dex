@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[2]
 CONFIG_FILES = [
     ".claude/skills/ai-setup/SKILL.md",
     "System/scripts/configure-ai-models.sh",
-    "06-Resources/Dex_System/AI_Model_Options.md",
+    "System/Dex_System/AI_Model_Options.md",
     ".scripts/lib/llm-client.cjs",
 ]
 

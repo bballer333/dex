@@ -479,8 +479,8 @@ def setup_mcp_config(vault_path: Path) -> tuple[bool, Optional[str]]:
         with open(MCP_CONFIG_EXAMPLE, 'r') as f:
             config_content = f.read()
         
-        # Replace {{VAULT_PATH}} with actual path
-        config_content = config_content.replace('{{VAULT_PATH}}', str(vault_path))
+        # Replace {{VAULT_PATH}} with actual path (POSIX slashes avoid JSON \t escape issues on Windows)
+        config_content = config_content.replace('{{VAULT_PATH}}', vault_path.as_posix())
         
         # Validate JSON and filter placeholder servers
         try:
