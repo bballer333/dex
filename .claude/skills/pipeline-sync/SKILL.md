@@ -38,7 +38,7 @@ Call `get_opportunities` from the salesforce-remote MCP. If $FILTER is provided,
 
 ### Step 2: Diff Against Existing Projects
 
-Scan `Projects/` for existing opportunity project pages. Match by the `sf_opportunity_id` in frontmatter.
+Scan `Projects/` **recursively** for existing opportunity project pages (they now live at `Projects/{Account}/{Opp}.md`). Match by the `sf_opportunity_id` in frontmatter.
 
 Categorize each opp:
 - **New** — No matching project page exists → create
@@ -52,7 +52,11 @@ For each new or updated opportunity:
 
 1. Call `get_account_details` (salesforce-remote MCP) with the account_id to get full account info and recent activity
 2. Call `get_account_contacts` (salesforce-remote MCP) to get contacts for the account
-3. Create the project folder: `Projects/{Account_Name} - {Opportunity_Name} - {Vendor__c}/`
+3. Create the project page at: `Projects/{Account_Name}/{Opportunity_Slug} - {Vendor__c}.md`
+   - `{Account_Name}` = sanitized account name (replace `&` → `and`, strip forbidden chars)
+   - `{Opportunity_Slug}` = opp name with account prefix stripped, sanitized the same way
+   - Create `Projects/{Account_Name}/` folder if it doesn't exist
+   - Create or update `Projects/{Account_Name}/{Account_Name}.md` hub page listing all opps for that account
 4. Write the project page using the template below
 5. For each contact found:
    - Check if a People page exists in `People/External/`
@@ -158,7 +162,7 @@ sf_last_synced: {ISO timestamp}
 
 | Quote # | Status | Total | Expiration | File |
 |---------|--------|-------|------------|------|
-| {QuoteNumber} | {Status} | ${GrandTotal} | {ExpirationDate} | [[Quotes/{filename}]] |
+| {QuoteNumber} | {Status} | ${GrandTotal} | {ExpirationDate} | [[Quotes_{OppSlug}/{filename}]] |
 
 ## Correspondence & Files
 
@@ -187,15 +191,16 @@ After sync, `Projects/` looks like:
 
 ```
 Projects/
-  README.md
-  Acme Corp - Widget Deal - WidgetCo/
-    Acme Corp - Widget Deal - WidgetCo.md
-    Quotes/
+  Acme Corp/
+    Acme Corp.md                          ← account hub (auto-generated)
+    Widget Deal - WidgetCo.md
+    Quotes_Widget Deal - WidgetCo/
       Q-00123_Proposal.pdf
       Q-00124_Revised_Proposal.pdf
-  Beta Inc - Service Contract - ServicePro/
-    Beta Inc - Service Contract - ServicePro.md
-    Quotes/
+  Beta Inc/
+    Beta Inc.md                           ← account hub
+    Service Contract - ServicePro.md
+    Quotes_Service Contract - ServicePro/
       Q-00200_SOW.pdf
 ```
 
