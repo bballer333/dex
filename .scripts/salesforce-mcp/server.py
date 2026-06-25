@@ -4,6 +4,7 @@
 import base64
 import email as email_lib
 import hashlib
+import re
 import json
 import os
 import secrets
@@ -2167,7 +2168,7 @@ def tool_sf_get_vendors(args):
         return {"error": "Not authenticated. Run sf_authenticate first."}
     soql = "SELECT Id, Name FROM Account WHERE RecordType.Name = 'Vendor' ORDER BY Name ASC LIMIT 200"
     result = sf_query(tokens, soql)
-    vendors = [{"id": r["Id"], "name": r["Name"], "prefix": r["Name"][:3].upper()} for r in result.get("records", [])]
+    vendors = [{"id": r["Id"], "name": r["Name"], "prefix": re.sub(r'[^A-Za-z0-9]', '', r["Name"])[:3].upper()} for r in result.get("records", [])]
     return {"vendors": vendors, "count": len(vendors)}
 
 
@@ -2187,7 +2188,7 @@ def tool_sf_create_opportunity(args):
         vendor_records = sf_query(tokens, f"SELECT Name FROM Account WHERE Id = '{vendor_id}' LIMIT 1").get("records", [])
         if not vendor_records:
             return {"error": f"Vendor not found for id '{vendor_id}'. Run sf_get_vendors to get valid vendor IDs."}
-        vendor_prefix = vendor_records[0]["Name"][:3].upper()
+        vendor_prefix = re.sub(r'[^A-Za-z0-9]', '', vendor_records[0]["Name"])[:3].upper()
         acct_records = sf_query(tokens, f"SELECT Name FROM Account WHERE Id = '{account_id}' LIMIT 1").get("records", [])
         if not acct_records:
             return {"error": f"Account not found for id '{account_id}'."}
@@ -2306,7 +2307,7 @@ def tool_sf_new_deal(args):
         return {"error": f"No vendor found matching '{args['vendor_name']}'. Run sf_get_vendors to see all vendors."}
     vendor = vendor_records[0]
     vendor_id, vendor_name = vendor["Id"], vendor["Name"]
-    vendor_prefix = vendor_name[:3].upper()
+    vendor_prefix = re.sub(r'[^A-Za-z0-9]', '', vendor_name)[:3].upper()
     steps.append(f"✅ Vendor: {vendor_name} ({vendor_id})")
 
     # 3. Resolve contact (optional)
