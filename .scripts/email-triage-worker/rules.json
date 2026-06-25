@@ -51,22 +51,22 @@
   ],
   "fyi": [
     {
-      "patterns": ["FYI", "heads up", "just so you know", "announcement", "update", "fyi:"],
+      "patterns": ["FYI", "heads up", "just so you know", "announcement", "fyi:"],
       "confidence": 0.85,
       "reason": "Informational email"
     },
     {
-      "subject_patterns": ["schedule", "policy", "news", "announcement", "reminder", "note that"],
+      "subject_patterns": ["schedule", "policy", "announcement", "reminder", "note that"],
       "confidence": 0.8,
       "reason": "Informational subject"
     },
     {
-      "from_patterns": ["news@", "updates@", "admin@", "hr@", "announce@"],
+      "from_patterns": ["admin@", "hr@", "announce@"],
       "confidence": 0.8,
       "reason": "From announcement service"
     },
     {
-      "patterns": ["please find attached", "for your information", "fyi"],
+      "patterns": ["please find attached", "for your information"],
       "confidence": 0.75,
       "reason": "Informational phrasing"
     },
