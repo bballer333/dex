@@ -1,5 +1,6 @@
 # ALLtra / Randy in-area outreach - Thursday, July 2, 2026
-# Follow-up on open ALLtra plasma opportunities + re-engage existing older ALLtra plasma owners (UCC-1 EDA report)
+# YOUR accounts only (Account.OwnerId = Chris Barsanti). Colleagues' accounts excluded per territory rule.
+# Tier 1: open ALLtra plasma opportunities. Tier 2: your accounts with aging plasma (upgrade/see ALLtra w/ Randy).
 # Generated 2026-06-26. Contacts pulled from Salesforce.
 #
 # HOW TO RUN (classic Outlook open, normal PowerShell - NOT admin):
@@ -10,7 +11,7 @@ $outlook = New-Object -ComObject Outlook.Application
 $emails = @(
     # ===== TIER 1 - OPEN ALLtra OPPORTUNITIES (active quotes) =====
     @{
-        # SMF Truck Equipment - "ALL - plasma" $298,147 - Quote 00019355 (Customer) - NextStep: schedule virtual mtg w/ Randy
+        # SMF Truck Equipment - "ALL - plasma" $298,147 - Quote 00019355 - NextStep: schedule virtual mtg w/ Randy
         To      = "abillig@smftruck.com"   # Al Billig
         Subject = "ALLtra Plasma Quote + Randy On-Site Thursday 7/2"
         Body    = "Hi Al,`n`nFollowing up on the ALLtra plasma quote (00019355) we put together - I'd like to keep it moving before the end of the quarter. Good timing on my end: Randy from ALLtra will be back in our area on Thursday, July 2.`n`nThat's a great chance to walk through the US-612 in person, get any technical questions answered straight from the factory, and lock in the final configuration. Would Thursday 7/2 work for a meeting or a live demo? Tell me a window that fits your day and I'll coordinate it with Randy.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
@@ -22,42 +23,36 @@ $emails = @(
         Body    = "Hi Ralph,`n`nWanted to circle back on the ALLtra US-612 plasma proposal for Gambone Steel. Randy from ALLtra is going to be back in the area on Thursday, July 2 - perfect timing to get him in front of you to review the system, talk through your throughput, and answer anything still open on the quote.`n`nCould we grab some time Thursday 7/2 for a meeting or demo? Let me know what works and I'll set it up with Randy.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
     },
 
-    # ===== TIER 2 - EXISTING ALLtra PLASMA OWNERS, OLDER MACHINES (2021, ~5 yrs) - UCC-1 EDA report =====
+    # ===== TIER 2 - YOUR ACCOUNTS WITH AGING PLASMA (upgrade / see ALLtra with Randy) =====
     @{
-        # Atlantic Metal Products Inc - ALLtra HG-16-10, 2021-09-20
-        To      = "rayc@ampva.com"   # Raymond Campbell
-        Subject = "ALLtra Back in the Area Thursday 7/2 - Your HG-16-10"
-        Body    = "Hi Raymond,`n`nHope the ALLtra HG-16-10 has been earning its keep since 2021. Randy from ALLtra will be back in our area on Thursday, July 2, and I wanted to give you first crack at some of his time.`n`nWhether it's a tune-up conversation, consumables and parts, or looking at added capacity as the work grows, it's a good chance to have the factory rep on-site. Would Thursday 7/2 work for a quick visit or a look at the latest ALLtra systems? Let me know and I'll set it up.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
-    },
-    @{
-        # Delaware Valley Steel Co - ALLtra HG16-12S-480v, 2021-02-05
+        # Delaware Valley Steel Co - existing ALLtra owner (HG16-12S, ~2021)
         To      = "jerry@delawarevalleysteel.com"   # Jerry Sharpe, President
         Subject = "Randy from ALLtra in the Area Thursday 7/2"
         Body    = "Hi Jerry,`n`nYour ALLtra HG16-12S has been cutting for a few years now - hope it's still running strong. Randy from ALLtra is going to be back in our area Thursday, July 2, so I wanted to reach out.`n`nIt's a good window to talk service, consumables, or where ALLtra's current 12-ft machines have come since you bought. Any interest in a short visit or demo on Thursday 7/2? Happy to work around your schedule.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
     },
     @{
-        # Protech Mechanical Inc - ALLtra US-612 480V, 2021-12-06
-        To      = "harold@protechnc.net"   # Harold Moore, Owner
-        Subject = "ALLtra On-Site Thursday 7/2 - Checking In on Your US-612"
-        Body    = "Hi Harold,`n`nWanted to touch base on the ALLtra US-612 you've been running since 2021. Randy from ALLtra will be back in the area on Thursday, July 2.`n`nIf you've been thinking about parts, a refresh, or adding capacity, it's a good chance to get time with the factory rep face to face. Would Thursday 7/2 work for a quick meeting or demo? Let me know and I'll get it on the calendar.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
+        # Metal Stock, Inc. - Philadelphia PA - Messer plasma 2018
+        To      = "tyler@metal-stock.com"   # Tyler Ruth, Operations Manager
+        Subject = "ALLtra Plasma - Randy in the Area Thursday 7/2"
+        Body    = "Hi Tyler,`n`nYour plasma table dates to 2018, so it's a good time to see how far the technology has come. Randy from ALLtra will be back in our area Thursday, July 2.`n`nALLtra builds a heavy-duty unitized plasma - strong on cut quality, speed, and uptime. If you're open to a quick look or some sample cuts while he's local, I'll set it up. Worth 20 minutes Thursday 7/2?`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
     },
     @{
-        # Steel Corp (Parent-RedGuard) - ALLtra PG-14 (sn 7217), 2021-09-27
-        To      = "dherrington@steelcorpllc.com"   # David Herrington, G.M.
-        Subject = "Randy from ALLtra Visiting Thursday 7/2"
-        Body    = "Hi David,`n`nHope the ALLtra PG-14 has been treating you well. Randy from ALLtra is going to be back in our area Thursday, July 2, and I wanted to see if you'd like to connect while he's here.`n`nGood opportunity to talk service, consumables, or what's new in the ALLtra lineup if you're weighing more capacity. Would Thursday 7/2 work for a short visit or demo? Just say the word and I'll line it up.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
+        # Michelman Steel Enterprises - Bethlehem PA - FICEP plasma 2017
+        To      = "emichelman@michelmansteel.com"   # Eric Michelman, Owner
+        Subject = "ALLtra Plasma - Randy in the Lehigh Valley Thursday 7/2"
+        Body    = "Hi Eric,`n`nYour plasma dates to 2017, so it's a good time to benchmark against current tech. Randy from ALLtra will be making visits in the Lehigh Valley area Thursday, July 2.`n`nALLtra's unitized plasma is strong on speed, cut quality, and uptime. Happy to bring him by for a no-pressure look or some sample parts. Worth a quick conversation Thursday 7/2?`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
     },
     @{
-        # Wiker Welding - ALLtra PG 14-6 Premium, 2021-05-26
-        To      = "wikerwelding@gmail.com"   # Jim Wiker
-        Subject = "ALLtra in the Area Thursday 7/2 - Your PG 14-6"
-        Body    = "Hi Jim,`n`nThe ALLtra PG 14-6 has a few years on it now - hope it's still cutting clean. Randy from ALLtra will be back in our area Thursday, July 2, so I wanted to reach out.`n`nWhether it's consumables, a service check, or a look at the newer ALLtra systems, it's a good chance to get the factory rep in front of you. Any interest in a quick visit or demo Thursday 7/2? Let me know what works.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
+        # Hazleton Iron, LLC - Hazleton PA - plasma 2019
+        To      = "rkrobert@hazletoniron.com"   # Russ Krobert, Shop Supervisor
+        Subject = "ALLtra Plasma - Randy in Hazleton Thursday 7/2"
+        Body    = "Hi Russ,`n`nYour plasma table is a few years in now (2019), and Randy from ALLtra will be right in the Hazleton area Thursday, July 2.`n`nALLtra builds a rugged unitized plasma - worth a look on cut quality and uptime. If you're open to a quick visit or sample parts, I'll bring him by. Worth 20 minutes Thursday 7/2?`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
     },
     @{
-        # LaserForm & Machine, Inc. - ALLtra PG-14, 2021-06-07
-        To      = "jeremy@lfmsc.com"   # Jeremy Ray, President & Owner
-        Subject = "Randy from ALLtra Back Thursday 7/2 - Quick Hello"
-        Body    = "Hi Jeremy,`n`nWanted to check in on the ALLtra PG-14 you've had since 2021. Randy from ALLtra is going to be back in the area on Thursday, July 2.`n`nIf parts, service, or added cutting capacity have been on your mind, it's a good time to get the factory rep on-site. Would Thursday 7/2 work for a short visit or demo? Happy to fit your schedule.`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
+        # Kelly Iron Works, Inc. - Hazleton PA - FICEP plasma 2020
+        To      = "pfk@kellyiron.com"   # Padraig Kelly, Owner
+        Subject = "Randy from ALLtra in Hazleton Thursday 7/2"
+        Body    = "Hi Padraig,`n`nYour plasma is fairly recent (2020), but Randy from ALLtra will be in the Hazleton area Thursday, July 2, and I wanted to make the introduction while he's local - useful if you ever weigh a second table or added capacity.`n`nNo pressure at all. Want me to hold a few minutes Thursday 7/2?`n`nThanks,`nChris Barsanti`nMid Atlantic Machinery"
     }
 )
 
@@ -72,10 +67,10 @@ foreach ($email in $emails) {
         $mail.Subject = $email.Subject
         $mail.Body = $email.Body
         $mail.Save()
-        Write-Host "OK: $($email.Subject)" -ForegroundColor Green
+        Write-Host "OK: $($email.To) - $($email.Subject)" -ForegroundColor Green
         $created++
     } catch {
-        Write-Host "FAIL: $($email.Subject) - $_" -ForegroundColor Red
+        Write-Host "FAIL: $($email.To) - $_" -ForegroundColor Red
         $skipped++
     }
 }
