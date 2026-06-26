@@ -35,6 +35,11 @@ Reusable patterns for pulling and analyzing Chris's Salesforce data (pipeline re
 - Always open saved JSON with `io.open(path, encoding="utf-8", errors="replace")` and `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` — SF data has smart quotes, em dashes, and a UTF-8 BOM (`﻿`) that crash default cp1252 print.
 - For ownership/geography breakdowns across thousands of IDs, use SOQL `GROUP BY Owner.Name, Owner.IsActive` per ~400-ID chunk — compact output, catches inactive (orphan) owners.
 
+**Implementation (live):**
+- Pull script: `.scripts/sf-pull-sync.py` → writes `.scripts/salesforce-data/` (opportunities, tasks, events, accounts, manifest). Scoped to OwnerId = Chris; auth reuses `~/.claude/sf_tokens.json` with creds from `.mcp.json`.
+- Scheduled: Windows Task "Dex SF Weekly Sync", Mondays 6:00 AM.
+- The dataset is **gitignored** (customer PII + email bodies — never commit). Read these files for analysis; only query SF live for real-time validation.
+
 **Key Insight:**
 > Don't re-query Salesforce for every ad-hoc analysis. Sync weekly to local, analyze off-platform, and treat live SF calls as the exception reserved for real-time validation.
 
