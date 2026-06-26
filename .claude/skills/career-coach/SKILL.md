@@ -4,8 +4,9 @@ description: Personal career coach with 4 modes: weekly reports, monthly reflect
 hooks:
   PostToolUse:
     - matcher: Write
-      type: command
-      command: "node .claude/hooks/career-evidence-capture.cjs"
+      hooks:
+        - type: command
+          command: "node .claude/hooks/career-evidence-capture.cjs"
 ---
 
 ## Purpose

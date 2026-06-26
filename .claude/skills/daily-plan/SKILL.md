@@ -8,8 +8,9 @@ model_routing:
     synthesis: balanced
 hooks:
   Stop:
-    - type: command
-      command: "node .claude/hooks/daily-plan-quick-ref.cjs"
+    - hooks:
+        - type: command
+          command: "node .claude/hooks/daily-plan-quick-ref.cjs"
 ---
 
 ## Purpose
