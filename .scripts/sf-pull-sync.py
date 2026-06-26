@@ -112,40 +112,55 @@ def strip_attrs(records):
 
 # -- Queries --------------------------------------------------------------------
 
+# Each query is tagged with a group:
+#   "frequent" -> opportunities, quotes, tasks (high-velocity; pulled often to stay near-live)
+#   "full"     -> everything (slower-changing accounts/contacts/events refreshed weekly)
 def queries(days):
     owner = OWNER_ID
     return {
-        "opportunities": (
+        "opportunities": ("frequent",
             "SELECT Id, Name, AccountId, Account.Name, StageName, Amount, CloseDate, Probability, "
             "NextStep, LastActivityDate, LastModifiedDate, CreatedDate, IsClosed, IsWon, "
             "Vendor__r.Name, Opp_Machine_Type__c, LeadSource, TouchNextDate__c "
             f"FROM Opportunity WHERE OwnerId = '{owner}'"
         ),
+        "quotes": ("frequent",
+            "SELECT Id, Name, QuoteNumber, Status, GrandTotal, TotalPrice, ExpirationDate, "
+            "OpportunityId, Opportunity.Name, AccountId, Account.Name, CreatedDate, LastModifiedDate "
+            f"FROM Quote WHERE Opportunity.OwnerId = '{owner}'"
+        ),
         # Activities on Chris's accounts by ANY owner, plus Chris's own activities anywhere.
-        "tasks": (
+        "tasks": ("frequent",
             "SELECT Id, Subject, Description, ActivityDate, Status, Type, WhatId, What.Name, "
             "WhoId, Who.Name, AccountId, Account.Name, OwnerId, Owner.Name, LastModifiedDate "
             f"FROM Task WHERE (Account.OwnerId = '{owner}' OR OwnerId = '{owner}') "
             f"AND LastModifiedDate = LAST_N_DAYS:{days} "
             "ORDER BY ActivityDate DESC NULLS LAST"
         ),
-        "events": (
+        "events": ("full",
             "SELECT Id, Subject, Description, ActivityDate, ActivityDateTime, DurationInMinutes, "
             "WhatId, What.Name, WhoId, Who.Name, AccountId, Account.Name, OwnerId, Owner.Name, LastModifiedDate "
             f"FROM Event WHERE (Account.OwnerId = '{owner}' OR OwnerId = '{owner}') "
             f"AND LastModifiedDate = LAST_N_DAYS:{days} "
             "ORDER BY ActivityDate DESC NULLS LAST"
         ),
-        "accounts": (
+        "accounts": ("full",
             "SELECT Id, Name, BillingState, BillingCity, Type, Industry, Phone, "
             "LastActivityDate, OwnerId "
             f"FROM Account WHERE OwnerId = '{owner}'"
+        ),
+        "contacts": ("full",
+            "SELECT Id, FirstName, LastName, Title, Email, Phone, MobilePhone, "
+            "AccountId, Account.Name, LastModifiedDate "
+            f"FROM Contact WHERE Account.OwnerId = '{owner}'"
         ),
     }
 
 
 def main():
     ap = argparse.ArgumentParser(description="Pull Chris's Salesforce data into a local working dataset")
+    ap.add_argument("--group", choices=["full", "frequent"], default="full",
+                    help="'frequent' = opportunities/quotes/tasks (high-velocity); 'full' = everything (default)")
     ap.add_argument("--days", type=int, default=730, help="Activity lookback window (default 730)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
@@ -155,30 +170,40 @@ def main():
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     tokens = get_valid_tokens()
-    manifest = {
-        "synced_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "owner_id": OWNER_ID,
-        "activity_lookback_days": args.days,
-        "instance_url": tokens.get("instance_url"),
-        "counts": {},
-    }
 
-    for name, soql in queries(args.days).items():
+    # Merge into existing manifest so a 'frequent' run doesn't erase 'full' object counts/timestamps.
+    mpath = OUT_DIR / "manifest.json"
+    manifest = {"owner_id": OWNER_ID, "instance_url": tokens.get("instance_url"),
+                "activity_lookback_days": args.days, "synced_at": {}, "counts": {}}
+    if mpath.exists():
+        try:
+            old = json.loads(mpath.read_text())
+            manifest["synced_at"] = old.get("synced_at", {}) if isinstance(old.get("synced_at"), dict) else {}
+            manifest["counts"] = old.get("counts", {})
+        except Exception:
+            pass
+
+    now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    selected = {n: q for n, (grp, q) in queries(args.days).items() if args.group == "full" or grp == "frequent"}
+
+    for name, soql in selected.items():
         try:
             recs = strip_attrs(sf_query_all(tokens, soql))
             (OUT_DIR / f"{name}.json").write_text(
                 json.dumps(recs, indent=2, default=str, ensure_ascii=False), encoding="utf-8"
             )
             manifest["counts"][name] = len(recs)
+            manifest["synced_at"][name] = now
             if not args.quiet:
                 print(f"  {name:14} {len(recs):>6} records")
         except Exception as e:
             manifest["counts"][name] = f"ERROR: {e}"
             print(f"  {name:14} ERROR: {e}", file=sys.stderr)
 
-    (OUT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    manifest["last_run"] = {"at": now, "group": args.group}
+    mpath.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if not args.quiet:
-        print(f"\nSynced {datetime.date.today()} -> {OUT_DIR}")
+        print(f"\nSynced [{args.group}] {now} -> {OUT_DIR}")
         print("Read these files for analysis instead of re-querying Salesforce live.")
 
 
