@@ -121,16 +121,19 @@ def queries(days):
             "Vendor__r.Name, Opp_Machine_Type__c, LeadSource, TouchNextDate__c "
             f"FROM Opportunity WHERE OwnerId = '{owner}'"
         ),
+        # Activities on Chris's accounts by ANY owner, plus Chris's own activities anywhere.
         "tasks": (
             "SELECT Id, Subject, Description, ActivityDate, Status, Type, WhatId, What.Name, "
-            "WhoId, Who.Name, AccountId, OwnerId, Owner.Name, LastModifiedDate "
-            f"FROM Task WHERE OwnerId = '{owner}' AND LastModifiedDate = LAST_N_DAYS:{days} "
+            "WhoId, Who.Name, AccountId, Account.Name, OwnerId, Owner.Name, LastModifiedDate "
+            f"FROM Task WHERE (Account.OwnerId = '{owner}' OR OwnerId = '{owner}') "
+            f"AND LastModifiedDate = LAST_N_DAYS:{days} "
             "ORDER BY ActivityDate DESC NULLS LAST"
         ),
         "events": (
             "SELECT Id, Subject, Description, ActivityDate, ActivityDateTime, DurationInMinutes, "
-            "WhatId, What.Name, WhoId, Who.Name, AccountId, OwnerId, LastModifiedDate "
-            f"FROM Event WHERE OwnerId = '{owner}' AND LastModifiedDate = LAST_N_DAYS:{days} "
+            "WhatId, What.Name, WhoId, Who.Name, AccountId, Account.Name, OwnerId, Owner.Name, LastModifiedDate "
+            f"FROM Event WHERE (Account.OwnerId = '{owner}' OR OwnerId = '{owner}') "
+            f"AND LastModifiedDate = LAST_N_DAYS:{days} "
             "ORDER BY ActivityDate DESC NULLS LAST"
         ),
         "accounts": (

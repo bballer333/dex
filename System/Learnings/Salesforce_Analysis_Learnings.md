@@ -37,7 +37,8 @@ Reusable patterns for pulling and analyzing Chris's Salesforce data (pipeline re
 
 **Implementation (live):**
 - Pull script: `.scripts/sf-pull-sync.py` → writes `.scripts/salesforce-data/` (opportunities, tasks, events, accounts, manifest). Scoped to OwnerId = Chris; auth reuses `~/.claude/sf_tokens.json` with creds from `.mcp.json`.
-- Scheduled: Windows Task "Dex SF Weekly Sync", Mondays 6:00 AM.
+- Scheduled: Windows Task "Dex SF Weekly Sync", Sundays 6:00 AM.
+- Activity scope: activities on Chris's accounts by **any** owner, plus Chris's own activities anywhere (`Account.OwnerId = Chris OR OwnerId = Chris`).
 - The dataset is **gitignored** (customer PII + email bodies — never commit). Read these files for analysis; only query SF live for real-time validation.
 
 **Key Insight:**
