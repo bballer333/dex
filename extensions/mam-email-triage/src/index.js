@@ -145,9 +145,25 @@ Respond in JSON only: {"label":"<label>","confidence":<0.0-1.0>,"reasoning":"<on
 }
 
 // ---------------------------------------------------------------------------
+// Power Automate webhook — fires in background after successful ingest
+// ---------------------------------------------------------------------------
+async function triggerPowerAutomate(env, payload) {
+  if (!env.POWER_AUTOMATE_WEBHOOK_URL) return;
+  try {
+    await fetch(env.POWER_AUTOMATE_WEBHOOK_URL, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error('Power Automate webhook error:', err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /ingest-email  (requires auth)
 // ---------------------------------------------------------------------------
-async function handleIngestEmail(request, env) {
+async function handleIngestEmail(request, env, ctx) {
   if (!checkAuth(request, env)) {
     return jsonResponse({ error: 'Unauthorized' }, 401);
   }
@@ -210,14 +226,24 @@ async function handleIngestEmail(request, env) {
       triage.label, triage.label, triage.confidence, triage.reasoning,
     ).run();
 
-    return jsonResponse({
+    const responsePayload = {
       id:               result.meta.last_row_id,
       triage_label:     triage.label,
       triage_reasoning: triage.reasoning,
       sf_match_status:  sfFields.sf_match_status,
       sf_contact_name:  sfFields.sf_contact_name,
       sf_account_name:  sfFields.sf_account_name,
-    }, 201);
+      received_at,
+      sender_email,
+      sender_name:      sender_name ?? null,
+      subject,
+      has_attachment:   has_attachment ? true : false,
+      attachment_name:  attachment_name ?? null,
+    };
+
+    ctx?.waitUntil(triggerPowerAutomate(env, responsePayload));
+
+    return jsonResponse(responsePayload, 201);
 
   } catch (err) {
     if (err.message?.includes('UNIQUE constraint failed')) {
@@ -367,12 +393,12 @@ function jsonResponse(data, status = 200) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url    = new URL(request.url);
     const method = request.method;
     const path   = url.pathname;
 
-    if (method === 'POST' && path === '/ingest-email')  return handleIngestEmail(request, env);
+    if (method === 'POST' && path === '/ingest-email')  return handleIngestEmail(request, env, ctx);
     if (method === 'GET'  && path === '/emails')         return handleListEmails(request, env);
     if (method === 'POST' && path === '/reclassify')     return handleReclassify(request, env);
 

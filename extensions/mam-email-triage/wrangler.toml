@@ -15,6 +15,9 @@ service = "salesforce-mcp"
 binding = "AI"
 
 # Secrets — set via CLI, never committed:
+#   wrangler secret put API_KEY
+#   wrangler secret put MCP_SECRET
+#   wrangler secret put POWER_AUTOMATE_WEBHOOK_URL
 #   wrangler secret put SF_CLIENT_ID
 #   wrangler secret put SF_CLIENT_SECRET
 #   wrangler secret put SF_USERNAME

@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS emails (
   full_body        TEXT,
   triage_label     TEXT    NOT NULL DEFAULT 'unclassified'
                            CHECK(triage_label IN ('unclassified','urgent','follow_up','fyi','ignore')),
+  triage_category  TEXT,
+  triage_confidence REAL,
+  triage_reasoning TEXT,
   has_attachment   INTEGER NOT NULL DEFAULT 0 CHECK(has_attachment IN (0,1)),
   attachment_name  TEXT,
   sf_contact_id    TEXT,
