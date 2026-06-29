@@ -1,0 +1,22 @@
+name            = "mam-email-triage"
+main            = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mam-email-triage"
+database_id = "3dd5ceb2-8c86-46fc-a007-12bae1a93da6"
+
+[[services]]
+binding = "SALESFORCE_MCP"
+service = "salesforce-mcp"
+
+[ai]
+binding = "AI"
+
+# Secrets — set via CLI, never committed:
+#   wrangler secret put SF_CLIENT_ID
+#   wrangler secret put SF_CLIENT_SECRET
+#   wrangler secret put SF_USERNAME
+#   wrangler secret put SF_PASSWORD_TOKEN
+#   wrangler secret put SF_LOGIN_URL   (optional — defaults to login.salesforce.com)

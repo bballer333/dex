@@ -275,20 +275,23 @@ For each completed item:
 
 **If nothing to sync:** Skip silently.
 
-### 5.8 Email Intelligence (if Gmail connected)
+### 5.8 Email Intelligence
 
-Check `System/integrations/config.yaml` for `google-workspace.enabled: true`.
+Call `get_actionable_emails` from the `retool-email` MCP (backed by MAM Email Triage / Cloudflare D1).
 
-If enabled and MCP healthy:
-1. Get unread count and priority emails from monitored labels
-2. Flag emails needing reply (> 48h since received, from key contacts in `People/`)
-3. Surface email threads with today's meeting attendees
+If the MCP responds:
+1. Surface urgent emails immediately — these need same-day response
+2. Show top follow-up emails (limit to 5 most recent)
+3. If an email's `sf_account_name` matches an account with an open opportunity, flag it
 
 Include in plan:
 
-> "Email: [X] unread, [Y] need replies. [Z] threads with today's meeting attendees."
+> **Email:** [X] urgent, [Y] follow-up need attention.
+> - 🔴 **[Subject]** — [sender_name or sender_email] ([sf_account_name if matched]) — *[triage_reasoning]*
+> - 🟡 **[Subject]** — [sender_name or sender_email] — *[triage_reasoning]*
 
-If unhealthy: skip silently (graceful degradation -- no error to user).
+If no urgent emails, omit the section or say "No urgent emails — [Y] follow-ups pending."
+If MCP call fails: skip silently.
 
 ### 5.9 Teams Intelligence (if Teams connected)
 
