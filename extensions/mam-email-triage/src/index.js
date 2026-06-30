@@ -13,6 +13,7 @@ function checkAuth(request, env) {
 // Salesforce contact lookup via salesforce-mcp worker
 // ---------------------------------------------------------------------------
 async function matchSalesforceContact(email, env) {
+  if (!env.SALESFORCE_MCP) return null;
   const res = await env.SALESFORCE_MCP.fetch(new Request('https://salesforce-mcp/mcp', {
     method:  'POST',
     headers: {
@@ -335,6 +336,148 @@ async function handleUpdateTriage(request, env, id) {
 }
 
 // ---------------------------------------------------------------------------
+// POST /emails/:id/attachments  (requires auth — upload one file to R2)
+// ---------------------------------------------------------------------------
+async function handleAddAttachment(request, env, emailId) {
+  if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  if (!env.ATTACHMENTS)         return jsonResponse({ error: 'R2 binding not configured' }, 500);
+
+  let body;
+  try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON body' }, 400); }
+
+  const { filename, base64, content_type } = body;
+  if (!filename || !base64) return jsonResponse({ error: 'filename and base64 are required' }, 400);
+
+  // Verify email exists
+  const { results: emailRows } = await env.DB.prepare(
+    'SELECT id FROM emails WHERE id = ?'
+  ).bind(emailId).all();
+  if (!emailRows.length) return jsonResponse({ error: 'Email not found' }, 404);
+
+  let bytes;
+  try { bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0)); }
+  catch { return jsonResponse({ error: 'Invalid base64 content' }, 400); }
+
+  const date   = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const r2Key  = `${date}/${emailId}/${Date.now()}-${filename}`;
+  const mime   = content_type || 'application/octet-stream';
+
+  try {
+    await env.ATTACHMENTS.put(r2Key, bytes, {
+      httpMetadata: { contentType: mime },
+    });
+  } catch (err) {
+    console.error('R2 put error:', err.message);
+    return jsonResponse({ error: 'Failed to store attachment' }, 500);
+  }
+
+  const { meta } = await env.DB.prepare(
+    `INSERT INTO attachments (email_id, filename, r2_key, content_type, size_bytes)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(emailId, filename, r2Key, mime, bytes.byteLength).run();
+
+  return jsonResponse({ id: meta.last_row_id, email_id: emailId, filename, r2_key: r2Key }, 201);
+}
+
+// ---------------------------------------------------------------------------
+// POST /attachments/batch  (requires auth — lookup email by sender+subject, upload files)
+// ---------------------------------------------------------------------------
+async function handleBatchAttachments(request, env) {
+  if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  if (!env.ATTACHMENTS)         return jsonResponse({ error: 'R2 binding not configured' }, 500);
+
+  let body;
+  try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON body' }, 400); }
+
+  const { sender_email, subject, attachments } = body;
+  if (!sender_email || !subject)
+    return jsonResponse({ error: 'sender_email and subject are required' }, 400);
+  if (!Array.isArray(attachments) || !attachments.length)
+    return jsonResponse({ error: 'attachments array is required' }, 400);
+
+  // Look up the most recent matching email by sender + subject
+  const { results: emailRows } = await env.DB.prepare(
+    `SELECT id FROM emails WHERE sender_email = ? AND subject = ?
+     ORDER BY received_at DESC LIMIT 1`
+  ).bind(sender_email, subject).all();
+
+  if (!emailRows.length) {
+    return jsonResponse({
+      error: 'Email not yet ingested — retry in a few seconds',
+      sender_email, subject,
+    }, 404);
+  }
+
+  const emailId = emailRows[0].id;
+  const date    = new Date().toISOString().slice(0, 7);
+  const saved   = [];
+  const failed  = [];
+
+  for (const att of attachments) {
+    const { filename, base64, content_type } = att;
+    if (!filename || !base64) { failed.push({ filename, reason: 'missing filename or base64' }); continue; }
+
+    let bytes;
+    try { bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0)); }
+    catch { failed.push({ filename, reason: 'invalid base64' }); continue; }
+
+    const r2Key = `${date}/${emailId}/${Date.now()}-${filename}`;
+    const mime  = content_type || 'application/octet-stream';
+
+    try {
+      await env.ATTACHMENTS.put(r2Key, bytes, { httpMetadata: { contentType: mime } });
+      const { meta } = await env.DB.prepare(
+        `INSERT INTO attachments (email_id, filename, r2_key, content_type, size_bytes) VALUES (?, ?, ?, ?, ?)`
+      ).bind(emailId, filename, r2Key, mime, bytes.byteLength).run();
+      saved.push({ id: meta.last_row_id, filename, r2_key: r2Key, size_bytes: bytes.byteLength });
+    } catch (err) {
+      console.error('Batch attachment error:', err.message);
+      failed.push({ filename, reason: err.message });
+    }
+  }
+
+  return jsonResponse({ email_id: emailId, saved, failed }, saved.length ? 201 : 500);
+}
+
+// ---------------------------------------------------------------------------
+// GET /emails/:id/attachments  (requires auth — list attachments for an email)
+// ---------------------------------------------------------------------------
+async function handleListAttachments(request, env, emailId) {
+  if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
+
+  const { results } = await env.DB.prepare(
+    'SELECT id, filename, content_type, size_bytes, created_at FROM attachments WHERE email_id = ? ORDER BY id'
+  ).bind(emailId).all();
+
+  return jsonResponse({ email_id: emailId, attachments: results });
+}
+
+// ---------------------------------------------------------------------------
+// GET /emails/:id/attachments/:aid  (requires auth — stream one file from R2)
+// ---------------------------------------------------------------------------
+async function handleDownloadAttachment(request, env, emailId, attachmentId) {
+  if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  if (!env.ATTACHMENTS)         return jsonResponse({ error: 'R2 binding not configured' }, 500);
+
+  const { results } = await env.DB.prepare(
+    'SELECT filename, r2_key, content_type FROM attachments WHERE id = ? AND email_id = ?'
+  ).bind(attachmentId, emailId).all();
+
+  if (!results.length) return jsonResponse({ error: 'Attachment not found' }, 404);
+
+  const { filename, r2_key, content_type } = results[0];
+  const obj = await env.ATTACHMENTS.get(r2_key);
+  if (!obj) return jsonResponse({ error: 'File missing from storage' }, 404);
+
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type':        content_type || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // POST /reclassify  (requires auth — batch-classifies unclassified emails)
 // ---------------------------------------------------------------------------
 async function handleReclassify(request, env) {
@@ -404,6 +547,15 @@ export default {
 
     const triageMatch = path.match(/^\/emails\/(\d+)\/triage$/);
     if (method === 'PATCH' && triageMatch) return handleUpdateTriage(request, env, parseInt(triageMatch[1], 10));
+
+    if (method === 'POST' && path === '/attachments/batch') return handleBatchAttachments(request, env);
+
+    const attachListMatch = path.match(/^\/emails\/(\d+)\/attachments$/);
+    if (method === 'POST' && attachListMatch) return handleAddAttachment(request, env, parseInt(attachListMatch[1], 10));
+    if (method === 'GET'  && attachListMatch) return handleListAttachments(request, env, parseInt(attachListMatch[1], 10));
+
+    const attachItemMatch = path.match(/^\/emails\/(\d+)\/attachments\/(\d+)$/);
+    if (method === 'GET' && attachItemMatch) return handleDownloadAttachment(request, env, parseInt(attachItemMatch[1], 10), parseInt(attachItemMatch[2], 10));
 
     return jsonResponse({ error: 'Not found' }, 404);
   },

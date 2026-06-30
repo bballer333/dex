@@ -13,8 +13,10 @@ CREATE TABLE IF NOT EXISTS emails (
   triage_category  TEXT,
   triage_confidence REAL,
   triage_reasoning TEXT,
-  has_attachment   INTEGER NOT NULL DEFAULT 0 CHECK(has_attachment IN (0,1)),
-  attachment_name  TEXT,
+  has_attachment        INTEGER NOT NULL DEFAULT 0 CHECK(has_attachment IN (0,1)),
+  attachment_name       TEXT,
+  attachment_r2_key     TEXT,
+  attachment_content_type TEXT,
   sf_contact_id    TEXT,
   sf_contact_name  TEXT,
   sf_contact_title TEXT,
@@ -38,6 +40,18 @@ CREATE INDEX IF NOT EXISTS idx_received_at     ON emails(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sender_email    ON emails(sender_email);
 CREATE INDEX IF NOT EXISTS idx_triage_status   ON emails(triage_label, status);
 CREATE INDEX IF NOT EXISTS idx_sf_match_status ON emails(sf_match_status);
+
+-- Per-email attachments (multiple supported)
+CREATE TABLE IF NOT EXISTS attachments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  email_id     INTEGER NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+  filename     TEXT NOT NULL,
+  r2_key       TEXT NOT NULL,
+  content_type TEXT,
+  size_bytes   INTEGER,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_email_id ON attachments(email_id);
 
 -- Auto-update updated_at on row changes
 CREATE TRIGGER IF NOT EXISTS trg_emails_updated_at
