@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "agents": "^0.17.1"
   }
 }
