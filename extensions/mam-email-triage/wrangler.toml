@@ -1,11 +1,20 @@
-name            = "mam-email-triage"
-main            = "src/index.js"
+name               = "mam-email-triage"
+main               = "src/index.js"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name       = "TRIAGE_AGENT"
+class_name = "TriageAgent"
+
+[[migrations]]
+tag                = "v1"
+new_sqlite_classes = ["TriageAgent"]
 
 [[d1_databases]]
-binding = "DB"
+binding       = "DB"
 database_name = "mam-email-triage"
-database_id = "3dd5ceb2-8c86-46fc-a007-12bae1a93da6"
+database_id   = "3dd5ceb2-8c86-46fc-a007-12bae1a93da6"
 
 [[services]]
 binding = "SALESFORCE_MCP"
