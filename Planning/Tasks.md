@@ -1,5 +1,11 @@
 # Tasks
 
+## Upcoming
+- [ ] **Reach out to Rybnick Mechanical - schedule meeting to discuss Flow Waterjet and Ironworker (bring Eric Marciniak from Flow)** ^task-20260628-117
+	- Target mid-August meeting. Discuss Flow Waterjet and Ironworker product lines. Coordinate with Eric Marciniak (Flow rep) to potentially join on customer visits. Good opportunity to bring factory support into the conversation.
+	- Pillar: Pipeline & Revenue | Priority: P2
+
+
 ## This Week
 - [x] **Send Pennsylvania Steel - Bensalem Plate Saw quote to Phil and Mike Loveland** ^task-20260622-001
 	- Pillar: Pipeline & Revenue | Priority: P2

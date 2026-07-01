@@ -128,6 +128,13 @@ The ideas below demonstrate the level of detail you'll see when you capture your
   - **Description:** The current Salesforce MCP is read-only (sf_get_pipeline, sf_get_opportunity, sf_get_account, etc.). Adding write tools would let Dex keep Salesforce current as Chris works, eliminating dual-maintenance. Priority tools: sf_update_opportunity (stage, amount, close date, next steps), sf_create_task (related to account/contact/opportunity), sf_log_activity (calls, emails). This came up directly — Chris asked if Dex could create SF tasks and update opp records, and the answer was no.
 
 
+- **[idea-004]** Week-itinerary: validate account locations before building draft
+  - **Score:** 0 (not yet ranked - run `/dex-backlog` to calculate)
+  - **Category:** intelligence
+  - **Captured:** 2026-06-28
+  - **Description:** Currently the skill assigns accounts to days based on pipeline data alone, without verifying actual billing city/state from Salesforce. This leads to accounts being placed in the wrong territory (e.g., Easton on a Bensalem day, Clark Summit on a Bucks day). The fix: after pulling pipeline opps, batch-lookup billing city for all candidate accounts via search_accounts, then group by geography before assigning to days. Flag any account where the city doesn't match the target territory and surface mismatches to the user before writing the Excel. Also check for accounts requiring formal scheduled meetings (e.g., shipyards, defense contractors) and auto-label them as calls rather than field visits.
+
+
 ## Archive (Implemented)
 
 *Implemented ideas will appear here with completion dates.*

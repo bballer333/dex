@@ -1,0 +1,13 @@
+{
+  "name": "retool-email",
+  "description": "MAM email triage — query triaged emails from the Cloudflare Worker / D1 database. Surfaces urgent and follow-up emails, supports search by sender, account, or keyword.",
+  "server": {
+    "command": "python",
+    "args": [".scripts/email-triage-mcp/server.py"],
+    "env": {
+      "EMAIL_TRIAGE_URL": "https://mam-email-triage.cbarsanti.workers.dev",
+      "EMAIL_TRIAGE_KEY": "${EMAIL_TRIAGE_KEY}"
+    }
+  },
+  "notes": "Replaces old retool-email (Postgres). Now talks to the mam-email-triage Cloudflare Worker. Set EMAIL_TRIAGE_KEY env var to the worker's API_KEY secret."
+}
