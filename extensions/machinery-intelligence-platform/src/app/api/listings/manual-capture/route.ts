@@ -7,6 +7,7 @@ interface ManualCaptureBody {
   manufacturerRawText: string;
   modelRawText?: string;
   machineModelId?: string;
+  machineTypeId?: string;
   year?: number;
   wattage?: number;
   tonnage?: number;
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
     .insert({
       source_id: body.sourceId ?? null,
       machine_model_id: body.machineModelId ?? null,
+      machine_type_id: body.machineTypeId ?? null,
       manufacturer_raw_text: body.manufacturerRawText,
       model_raw_text: body.modelRawText ?? null,
       year: body.year ?? null,

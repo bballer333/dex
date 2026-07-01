@@ -12,7 +12,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <header className="site-header">
           <a href="/">Machinery Intelligence</a>
-          <nav>
+          <nav style={{ display: "flex", gap: 16 }}>
+            <a href="/listings">Listings</a>
             <a href="/intake">New Customer Search</a>
           </nav>
         </header>

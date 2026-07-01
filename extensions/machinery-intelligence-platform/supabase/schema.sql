@@ -71,6 +71,11 @@ create table if not exists listings (
   id uuid primary key default gen_random_uuid(),
   source_id uuid references sources(id) on delete set null,
   machine_model_id uuid references machine_models(id) on delete set null,
+  -- Denormalized against machine_model_id: manual capture (MVP) often won't
+  -- have a matched machine_model row yet, but the matching engine still
+  -- needs a hard machine-type filter, and searches.machine_type_id is set
+  -- directly from the intake form the same way.
+  machine_type_id uuid references machine_types(id) on delete set null,
   manufacturer_raw_text text,
   model_raw_text text,
   year integer,
@@ -91,6 +96,7 @@ create table if not exists listings (
   created_at timestamptz not null default now()
 );
 create index if not exists idx_listings_machine_model on listings(machine_model_id);
+create index if not exists idx_listings_machine_type on listings(machine_type_id);
 create index if not exists idx_listings_active on listings(is_active);
 
 create table if not exists listing_options (

@@ -1,8 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useMachineTypes } from "@/components/useMachineTypes";
 
 export function IntakeForm() {
+  const router = useRouter();
+  const machineTypes = useMachineTypes();
+  const [machineTypeId, setMachineTypeId] = useState("");
   const [model, setModel] = useState("");
   const [manufacturerPreference, setManufacturerPreference] = useState("");
   const [minYear, setMinYear] = useState<number | "">("");
@@ -24,6 +29,7 @@ export function IntakeForm() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        machineTypeId: machineTypeId || undefined,
         model,
         manufacturerPreference,
         minYear: minYear === "" ? undefined : minYear,
@@ -38,13 +44,29 @@ export function IntakeForm() {
         notes,
       }),
     });
-    setStatus(res.ok ? "Saved — search is ready for matching." : "Error saving search.");
+    if (!res.ok) {
+      setStatus("Error saving search.");
+      return;
+    }
+    const body = await res.json();
+    router.push(`/searches/${body.search.id}`);
   }
 
   return (
     <form className="card" onSubmit={submit}>
       <h3>Customer Requirement Intake</h3>
       <div className="field-row">
+        <div className="field">
+          <label>Machine Type</label>
+          <select value={machineTypeId} onChange={(e) => setMachineTypeId(e.target.value)}>
+            <option value="">Any</option>
+            {machineTypes.map((mt) => (
+              <option key={mt.id} value={mt.id}>
+                {mt.name}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="field">
           <label>Manufacturer Preference</label>
           <input value={manufacturerPreference} onChange={(e) => setManufacturerPreference(e.target.value)} />
